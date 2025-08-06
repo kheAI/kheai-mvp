@@ -550,6 +550,168 @@ Examples:
 • "Rental income RM800"
 • "Beli inventory RM150"`;
   }
+
+  async parseRecurringTransaction(message, userId, frequency = null) {
+    // Extract frequency from message if not provided
+    if (!frequency) {
+      const lowerMessage = message.toLowerCase();
+      if (lowerMessage.includes('daily')) frequency = 'daily';
+      else if (lowerMessage.includes('weekly')) frequency = 'weekly';
+      else if (lowerMessage.includes('monthly')) frequency = 'monthly';
+      else if (lowerMessage.includes('yearly')) frequency = 'yearly';
+      else frequency = 'monthly'; // default
+    }
+
+    // Parse the basic transaction first
+    const basicTransaction = await this.parseTransaction(message, userId);
+    
+    if (basicTransaction && basicTransaction.amount) {
+      return {
+        ...basicTransaction,
+        frequency: frequency,
+        start_date: new Date().toISOString(),
+        next_due: this.calculateNextDue(new Date().toISOString(), frequency)
+      };
+    }
+    
+    return null;
+  }
+
+  async parseAsset(message, userId, assetCategory = null) {
+    const prompt = `Parse this asset addition message into structured data:
+Message: "${message}"
+
+Extract and return ONLY valid JSON:
+{
+  "name": "asset name",
+  "type": "cash|bank_savings|crypto|stocks|property|business_equity|other",
+  "value": number,
+  "purchase_price": number (same as value if not specified)
+}
+
+ASSET TYPE DETECTION:
+- cash: cash, money, tunai
+- bank_savings: bank, savings, simpanan
+- crypto: bitcoin, btc, crypto, cryptocurrency
+- stocks: stocks, shares, saham
+- property: property, house, rumah, tanah
+- business_equity: business, equity, perniagaan
+
+EXAMPLES:
+"Add cash RM5000" → {"name": "Cash", "type": "cash", "value": 5000, "purchase_price": 5000}
+"Add Bitcoin RM2000" → {"name": "Bitcoin", "type": "crypto", "value": 2000, "purchase_price": 2000}
+
+Return ONLY the JSON object:`;
+
+    try {
+      const result = await this.model.generateContent(prompt);
+      const response = result.response.text();
+      
+      const jsonMatch = response.match(/\{[\s\S]*?\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.value && parsed.value > 0 && parsed.name) {
+          return parsed;
+        }
+      }
+      
+      return this.fallbackAssetParsing(message);
+    } catch (error) {
+      console.error('Asset parsing error:', error);
+      return this.fallbackAssetParsing(message);
+    }
+  }
+
+  fallbackAssetParsing(message) {
+    try {
+      const lowerMessage = message.toLowerCase();
+      
+      // Extract amount
+      const amountMatch = message.match(/rm\s*(\d+(?:\.\d{2})?)/i) || 
+                         message.match(/(\d+(?:\.\d{2})?)\s*rm/i) ||
+                         message.match(/(\d+(?:\.\d{2})?)/);
+      
+      if (!amountMatch) return null;
+      
+      const value = parseFloat(amountMatch[1]);
+      if (value <= 0) return null;
+      
+      // Detect asset type
+      let type = 'other';
+      let name = 'Asset';
+      
+      if (lowerMessage.includes('cash') || lowerMessage.includes('tunai')) {
+        type = 'cash';
+        name = 'Cash';
+      } else if (lowerMessage.includes('bitcoin') || lowerMessage.includes('btc')) {
+        type = 'crypto';
+        name = 'Bitcoin';
+      } else if (lowerMessage.includes('bank') || lowerMessage.includes('savings')) {
+        type = 'bank_savings';
+        name = 'Bank Savings';
+      } else if (lowerMessage.includes('stock') || lowerMessage.includes('shares')) {
+        type = 'stocks';
+        name = 'Stocks';
+      } else if (lowerMessage.includes('property') || lowerMessage.includes('house')) {
+        type = 'property';
+        name = 'Property';
+      }
+      
+      return {
+        name: name,
+        type: type,
+        value: value,
+        purchase_price: value
+      };
+    } catch (error) {
+      console.error('Fallback asset parsing error:', error);
+      return null;
+    }
+  }
+
+  async parseFutureTransaction(message, userId) {
+    // Extract date from message
+    const datePatterns = [
+      /next week/i,
+      /next month/i,
+      /tomorrow/i,
+      /on (\d{4}-\d{2}-\d{2})/i,
+      /in (january|february|march|april|may|june|july|august|september|october|november|december)/i
+    ];
+    
+    let futureDate = new Date();
+    
+    if (message.toLowerCase().includes('next week')) {
+      futureDate.setDate(futureDate.getDate() + 7);
+    } else if (message.toLowerCase().includes('next month')) {
+      futureDate.setMonth(futureDate.getMonth() + 1);
+    } else if (message.toLowerCase().includes('tomorrow')) {
+      futureDate.setDate(futureDate.getDate() + 1);
+    }
+    
+    // Parse the basic transaction
+    const basicTransaction = await this.parseTransaction(message, userId);
+    
+    if (basicTransaction && basicTransaction.amount) {
+      return {
+        ...basicTransaction,
+        date: futureDate.toISOString()
+      };
+    }
+    
+    return null;
+  }
+
+  calculateNextDue(currentDate, frequency) {
+    const date = new Date(currentDate);
+    switch (frequency) {
+      case 'daily': date.setDate(date.getDate() + 1); break;
+      case 'weekly': date.setDate(date.getDate() + 7); break;
+      case 'monthly': date.setMonth(date.getMonth() + 1); break;
+      case 'yearly': date.setFullYear(date.getFullYear() + 1); break;
+    }
+    return date.toISOString();
+  }
 }
 
 module.exports = new AIService();

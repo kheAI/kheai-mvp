@@ -1,47 +1,48 @@
+// src/bot/bot.js
+
 const AIService = require('../services/ai');
 const { RedisService } = require('../services/redis');
 
-// English-first response templates
+// Try to import enhanced services, but don't fail if they're not available
+let RecurringService, CashflowService, AssetService;
+try {
+  RecurringService = require('../services/recurring');
+} catch (e) {
+  console.log('⚠️ RecurringService not available');
+}
+try {
+  CashflowService = require('../services/cashflow');
+} catch (e) {
+  console.log('⚠️ CashflowService not available');
+}
+try {
+  AssetService = require('../services/assets');
+} catch (e) {
+  console.log('⚠️ AssetService not available');
+}
+
+// Simple response templates
 const responses = {
-  welcome: `🎉 Welcome to kheAI!
+  welcome: `🎉 Welcome to kheAI Liquidity!
 
-Your AI-powered bookkeeper for Malaysian microbusinesses.
+Your AI-powered liquidity management for Malaysian microbusinesses.
 
-🔹 Track expenses & income via chat
-🔹 Get Bitcoin treasury advice  
-🔹 Real-time business insights
-🔹 Malaysian tax guidance
+🔹 Track income & expenses via chat
+🔹 Set up recurring transactions
+🔹 Forecast cashflow (6 months)
+🔹 Manage liquid assets
+🔹 Bitcoin treasury advice
 
 Try these commands:
-/setup - Configure your business
-/insights - Get business analysis
 /help - See all commands
+/insights - Business analysis
+/transactions - View recent transactions
 
 Or just type naturally: "Beli inventory RM150" or "Sales RM500"`,
 
   welcomeBack: (name) => `Welcome back, ${name}! 👋
 
-Ready to manage your business finances?`,
-
-  transactionRecorded: (txn, balance) => `✅ TRANSACTION RECORDED
-
-${txn.type === 'income' ? '💰' : '💸'} ${txn.description}
-💵 Amount: RM${txn.amount_myr.toFixed(2)}
-📂 Category: ${txn.category}
-📅 Date: ${new Date(txn.date).toLocaleDateString()}
-
-📊 Current Balance: RM${balance.toFixed(2)}`,
-
-  businessDashboard: (revenue, expenses, profit, profitMargin, insights) => `📊 BUSINESS DASHBOARD
-
-THIS MONTH:
-💰 Revenue: RM${revenue.toFixed(2)}
-💸 Expenses: RM${expenses.toFixed(2)}
-📈 Profit: RM${profit.toFixed(2)}
-📊 Margin: ${profitMargin}%
-
-AI INSIGHTS:
-${insights}`,
+Ready to manage your liquidity?`,
 
   addIncomePrompt: `💰 ADD INCOME
 
@@ -65,22 +66,14 @@ EXAMPLES:
 
 Type your expense below: 👇`,
 
-  searchPrompt: `🔍 SEARCH TRANSACTIONS
+  transactionRecorded: (txn, balance) => `✅ TRANSACTION RECORDED
 
-EXAMPLES:
-• /search inventory
-• /search rent  
-• /search RM500
+${txn.type === 'income' ? '💰' : '💸'} ${txn.description}
+💵 Amount: RM${txn.amount_myr.toFixed(2)}
+📂 Category: ${txn.category}
+📅 Date: ${new Date(txn.date).toLocaleDateString()}
 
-What would you like to search for?`,
-
-  noTransactionsToDelete: `🗑️ No transactions to delete.
-
-Add some transactions first:
-• "Sales RM500"
-• "Beli inventory RM150"`,
-
-  noTransactionsToUndo: `🗑️ No transactions to undo.`,
+📊 Current Balance: RM${balance.toFixed(2)}`,
 
   parseError: `❌ I couldn't parse that transaction.
 
@@ -88,135 +81,225 @@ Try these formats:
 • "Rental income RM800"
 • "Sales RM500"
 • "Beli inventory RM150"
-• "Bayar rent RM800"
 
 Or ask me anything about your business! 🤖`,
 
   generalError: `❌ Sorry, I couldn't process that.
 
-Try being more specific:
-• "Rental income RM800"
-• "Sales RM500" 
-• "Beli inventory RM150"
-• "Bitcoin price now?"
-• "How to buy Bitcoin safely?"
-
-Or ask me anything about your business! 🤖`
+Try being more specific or use /help for available commands.`
 };
 
 function initializeBot(bot) {
+  console.log('🚀 Initializing kheAI Bot...');
+
   // Welcome & Onboarding
   bot.onText(/\/start/, async (msg) => {
     const userId = msg.from.id;
-    const user = await RedisService.getUser(userId);
+    console.log(`📱 /start command from user ${userId}`);
     
-    if (!user.id) {
-      await RedisService.createUser(userId, {
-        name: msg.from.first_name || 'User',
-        language: 'en'
-      });
+    try {
+      const user = await RedisService.getUser(userId);
       
-      bot.sendMessage(userId, responses.welcome, {
+      if (!user || !user.id) {
+        await RedisService.createUser(userId, {
+          name: msg.from.first_name || 'User',
+          language: 'en'
+        });
+        
+        bot.sendMessage(userId, responses.welcome, {
+          reply_markup: {
+            remove_keyboard: true
+          }
+        });
+      } else {
+        bot.sendMessage(userId, responses.welcomeBack(user.name), {
+          reply_markup: {
+            remove_keyboard: true
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Start command error:', error);
+      bot.sendMessage(userId, 'Welcome! Ready to manage your business finances?', {
         reply_markup: {
-          keyboard: [
-            ['💰 Add Income', '💸 Add Expense'],
-            ['📊 Insights', '🔍 Search'],
-            ['🗑️ Delete', '❓ Help']
-          ],
-          resize_keyboard: true
-        }
-      });
-    } else {
-      bot.sendMessage(userId, responses.welcomeBack(user.name), {
-        reply_markup: {
-          keyboard: [
-            ['💰 Add Income', '💸 Add Expense'],
-            ['📊 Insights', '🔍 Search'],
-            ['🗑️ Delete', '❓ Help']
-          ],
-          resize_keyboard: true
+          remove_keyboard: true
         }
       });
     }
   });
 
-  // Business Setup
-  bot.onText(/\/setup/, async (msg) => {
+  // Help command
+  bot.onText(/\/help/, (msg) => {
     const userId = msg.from.id;
+    console.log(`📱 /help command from user ${userId}`);
     
-    bot.sendMessage(userId, `🏪 Let's set up your business profile:
+    bot.sendMessage(userId, `🤖 kheAI LIQUIDITY COMMANDS
 
-What type of business do you run?`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🛒 Retail/Kedai', callback_data: 'setup_retail' }],
-          [{ text: '🍽️ F&B/Restaurant', callback_data: 'setup_fnb' }],
-          [{ text: '🔧 Services', callback_data: 'setup_services' }],
-          [{ text: '📦 E-commerce', callback_data: 'setup_ecommerce' }],
-          [{ text: '📋 Other', callback_data: 'setup_other' }]
-        ]
-      }
-    });
+💰 BASIC COMMANDS:
+• Just type: "Sales RM500" or "Beli inventory RM150"
+• /insights - Business analysis (auto-fixes metrics)
+• /transactions - View ALL transactions
+• /search [term] - Find transactions
+• /delete - Remove transactions (choose by number)
+• /export - Download CSV
+
+💫 RECURRING TRANSACTIONS:
+• /recurring_list - View & delete by number
+• "Monthly rent RM800" - Create recurring
+
+📊 ADVANCED FEATURES:
+• /forecast - Cashflow projections
+• /assets_list - View assets & delete option
+• /assets_add - Add new asset
+• /assets_delete - Delete assets by number
+
+🪙 BITCOIN TREASURY:
+• "Bitcoin price now?" - Current BTC + advice
+• "Should I buy Bitcoin?" - Recommendations
+
+🔧 MAINTENANCE:
+• /recover - Fix missing transactions & metrics
+• /debug - System status
+• /status - Service availability
+• /fix_metrics - Manual metric correction
+
+EXAMPLES:
+• "Rental income RM800"
+• "Monthly utilities RM200"
+• "Add Bitcoin RM2000"
+• "Bitcoin price now?"
+
+NEW FEATURES:
+✅ Number-based deletion for everything
+✅ Auto-metric fixing in /insights
+✅ Asset deletion support
+✅ Better transaction listing
+
+Type naturally - I understand English and Malay!`);
   });
 
-  // Quick action buttons
-  bot.onText(/💰 Add Income/, async (msg) => {
+  // Insights command - FIXED with auto-reconciliation
+  bot.onText(/\/insights?/, async (msg) => {
     const userId = msg.from.id;
-    bot.sendMessage(userId, responses.addIncomePrompt);
-  });
-
-  bot.onText(/💸 Add Expense/, async (msg) => {
-    const userId = msg.from.id;
-    bot.sendMessage(userId, responses.addExpensePrompt);
-  });
-
-  // Insights command
-  bot.onText(/📊 Insights|\/insights/, async (msg) => {
-    const userId = msg.from.id;
+    console.log(`📱 /insights command from user ${userId}`);
     
     bot.sendChatAction(userId, 'typing');
     
     try {
+      // Force reconciliation first to ensure correct metrics
+      console.log(`🔄 Reconciling metrics for user ${userId} before insights`);
+      await RedisService.reconcileBusinessMetrics(userId);
+      
+      // Get fresh metrics after reconciliation
       const metrics = await RedisService.getBusinessMetrics(userId);
-      const insights = await AIService.generateInsights(userId);
+      console.log(`📊 Metrics for user ${userId}:`, metrics);
       
       const revenue = parseFloat(metrics.total_revenue || 0);
       const expenses = parseFloat(metrics.total_expenses || 0);
       const profit = revenue - expenses;
       const profitMargin = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : 0;
       
-      const dashboardMessage = responses.businessDashboard(revenue, expenses, profit, profitMargin, insights);
+      // Get AI insights
+      let insights = 'Generating insights...';
+      try {
+        insights = await AIService.generateInsights(userId);
+      } catch (error) {
+        console.error('AI insights error:', error);
+        insights = 'AI insights temporarily unavailable. Your financial data shows above.';
+      }
+      
+      let liquidityInfo = '';
+      if (AssetService) {
+        try {
+          const liquidityData = await AssetService.getLiquidityBreakdown(userId);
+          liquidityInfo = `\n💧 LIQUIDITY HEALTH:
+• Liquid Assets: RM${liquidityData.liquid.total.toFixed(2)}
+• Semi-Liquid: RM${liquidityData.semi_liquid.total.toFixed(2)}
+• Liquidity Ratio: ${(liquidityData.liquidity_ratio * 100).toFixed(1)}%`;
+        } catch (error) {
+          console.error('Liquidity data error:', error);
+        }
+      }
+      
+      const dashboardMessage = `📊 BUSINESS DASHBOARD
+
+THIS MONTH:
+💰 Revenue: RM${revenue.toFixed(2)}
+💸 Expenses: RM${expenses.toFixed(2)}
+📈 Profit: RM${profit.toFixed(2)}
+📊 Margin: ${profitMargin}%${liquidityInfo}
+
+AI INSIGHTS:
+${insights}
+
+📝 Total Transactions: ${metrics.transaction_count || 0}`;
+      
       bot.sendMessage(userId, dashboardMessage);
       
     } catch (error) {
       console.error('Insights error:', error);
-      bot.sendMessage(userId, '❌ Unable to generate insights. Please try again.');
+      bot.sendMessage(userId, '❌ Unable to generate insights. Try /recover first.');
     }
   });
 
-  // Enhanced search command
-  bot.onText(/🔍 Search|\/search(?:\s+(.+))?/, async (msg, match) => {
+  // Transactions command - FIXED to show all transactions
+  bot.onText(/\/transactions/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /transactions command from user ${userId}`);
+    
+    try {
+      // Use findAllUserTransactions instead of getRecentTransactions
+      const allTransactions = await RedisService.findAllUserTransactions(userId);
+      const transactions = allTransactions.slice(0, 15); // Show up to 15
+      
+      if (transactions.length === 0) {
+        bot.sendMessage(userId, '📝 No transactions found.\n\nStart by adding one:\n• "Sales RM500"\n• "Beli inventory RM150"');
+        return;
+      }
+      
+      let message = `📝 ALL TRANSACTIONS (${allTransactions.length} total)\n\n`;
+      
+      transactions.forEach((txn, index) => {
+        const emoji = txn.type === 'income' ? '💰' : '💸';
+        const date = new Date(txn.date).toLocaleDateString();
+        const isRecurring = txn.description.includes('(Auto)') ? '🔄' : '';
+        message += `${index + 1}. ${emoji}${isRecurring} ${txn.description}\n`;
+        message += `   RM${txn.amount_myr} • ${txn.category} • ${date}\n\n`;
+      });
+      
+      if (allTransactions.length > 15) {
+        message += `... and ${allTransactions.length - 15} more transactions\n\n`;
+      }
+      
+      message += `Use /search [term] to find specific transactions`;
+      
+      bot.sendMessage(userId, message);
+      
+    } catch (error) {
+      console.error('Transactions error:', error);
+      bot.sendMessage(userId, '❌ Unable to load transactions.');
+    }
+  });
+
+  // Search command
+  bot.onText(/\/search(?:\s+(.+))?/, async (msg, match) => {
     const userId = msg.from.id;
     const query = match && match[1];
+    console.log(`📱 /search command from user ${userId}, query: ${query}`);
     
     if (!query) {
       bot.sendMessage(userId, `🔍 SEARCH TRANSACTIONS
 
 EXAMPLES:
-• /search rental - Find by category
-• /search inventory - Find inventory transactions
-• /search RM800 - Find specific amount
-• /search supplier - Find by description
+• /search rental
+• /search RM800
+• /search inventory
 
 What would you like to search for?`);
       return;
     }
     
-    bot.sendChatAction(userId, 'typing');
-    
     try {
-      console.log(`🔍 Searching for: "${query}" (user: ${userId})`);
-      
       const results = await RedisService.searchTransactions(userId, query);
       
       if (results.documents && results.documents.length > 0) {
@@ -233,33 +316,10 @@ What would you like to search for?`);
         });
         
         message += `📊 Total Found: RM${total.toFixed(2)}`;
-        message += `\n🔢 Results: ${results.documents.length} transaction${results.documents.length > 1 ? 's' : ''}`;
         
-        if (results.documents.length > 10) {
-          message += `\n\n*Showing first 10 of ${results.documents.length} results*`;
-        }
-        
-        bot.sendMessage(userId, message, {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '📊 Analyze Results', callback_data: `analyze_${query}` }],
-              [{ text: '📋 Export Results', callback_data: `export_search_${query}` }]
-            ]
-          }
-        });
+        bot.sendMessage(userId, message);
       } else {
-        bot.sendMessage(userId, `🔍 No transactions found for "${query}"
-
-TRY THESE SEARCH TYPES:
-• **Categories**: rental, inventory, rent, utilities
-• **Amounts**: RM800, 150, RM1200  
-• **Descriptions**: supplier, customer, shop
-• **Types**: income, expense
-
-EXAMPLES:
-• /search rental income
-• /search RM800
-• /search inventory`);
+        bot.sendMessage(userId, `🔍 No transactions found for "${query}"`);
       }
       
     } catch (error) {
@@ -268,139 +328,49 @@ EXAMPLES:
     }
   });
 
-  // Delete transactions command
-  bot.onText(/🗑️ Delete|\/delete/, async (msg) => {
+  // Delete command - number-based selection
+  bot.onText(/\/delete/, async (msg) => {
     const userId = msg.from.id;
-    
-    bot.sendChatAction(userId, 'typing');
+    console.log(`📱 /delete command from user ${userId}`);
     
     try {
       const transactions = await RedisService.findAllUserTransactions(userId);
       
       if (transactions.length === 0) {
-        bot.sendMessage(userId, responses.noTransactionsToDelete);
+        bot.sendMessage(userId, '🗑️ No transactions to delete.');
         return;
       }
       
-      let message = `🗑️ ALL TRANSACTIONS
-
-Select a transaction to delete:
-
-`;
+      let message = `🗑️ RECENT TRANSACTIONS\n\nReply with the number to delete:\n\n`;
       
-      const keyboard = [];
-      transactions.slice(0, 15).forEach((txn, index) => {
+      transactions.slice(0, 10).forEach((txn, index) => {
         const emoji = txn.type === 'income' ? '💰' : '💸';
         const date = new Date(txn.date).toLocaleDateString();
-        message += `${index + 1}. ${emoji} ${txn.description} - RM${txn.amount_myr} (${date})\n`;
-        
-        keyboard.push([{
-          text: `🗑️ Delete #${index + 1}`,
-          callback_data: `delete_${txn.id}`
-        }]);
+        const isRecurring = txn.description.includes('(Auto)') ? '🔄' : '';
+        message += `${index + 1}. ${emoji}${isRecurring} ${txn.description} - RM${txn.amount_myr} (${date})\n`;
       });
       
-      if (transactions.length > 15) {
-        message += `\n... and ${transactions.length - 15} more transactions`;
-      }
+      message += `\nType the number (1-${Math.min(10, transactions.length)}) to delete:`;
       
-      bot.sendMessage(userId, message, {
-        reply_markup: {
-          inline_keyboard: keyboard
-        }
-      });
+      bot.sendMessage(userId, message);
+      
+      // Store transactions for deletion reference
+      await RedisService.setUserState(userId, 'awaiting_delete_number', transactions.slice(0, 10));
       
     } catch (error) {
-      console.error('Delete list error:', error);
-      bot.sendMessage(userId, '❌ Unable to show transactions. Please try again.');
-    }
-  });
-
-  // Undo last transaction command
-  bot.onText(/\/undo/, async (msg) => {
-    const userId = msg.from.id;
-    
-    bot.sendChatAction(userId, 'typing');
-    
-    try {
-      const transactions = await RedisService.findAllUserTransactions(userId);
-      
-      if (transactions.length === 0) {
-        bot.sendMessage(userId, responses.noTransactionsToUndo);
-        return;
-      }
-      
-      const lastTransaction = transactions[0];
-      const emoji = lastTransaction.type === 'income' ? '💰' : '💸';
-      
-      bot.sendMessage(userId, `🗑️ UNDO LAST TRANSACTION
-
-${emoji} ${lastTransaction.description}
-💵 Amount: RM${lastTransaction.amount_myr}
-📅 Date: ${new Date(lastTransaction.date).toLocaleDateString()}
-
-Are you sure you want to delete this transaction?`, {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Yes, Delete', callback_data: `confirm_delete_${lastTransaction.id}` },
-              { text: '❌ Cancel', callback_data: 'cancel_delete' }
-            ]
-          ]
-        }
-      });
-      
-    } catch (error) {
-      console.error('Undo error:', error);
-      bot.sendMessage(userId, '❌ Unable to undo. Please try again.');
-    }
-  });
-
-  // Recovery command
-  bot.onText(/\/recover/, async (msg) => {
-    const userId = msg.from.id;
-    
-    bot.sendChatAction(userId, 'typing');
-    
-    try {
-      bot.sendMessage(userId, '🔄 STARTING RECOVERY PROCESS...\n\nThis may take a moment...');
-      
-      const allTransactions = await RedisService.findAllUserTransactions(userId);
-      await RedisService.rebuildTransactionList(userId);
-      const reconcileResult = await RedisService.reconcileBusinessMetrics(userId);
-      
-      bot.sendMessage(userId, `✅ RECOVERY COMPLETED!
-
-🔍 FOUND TRANSACTIONS:
-• Total found: ${allTransactions.length}
-• In metrics: ${reconcileResult.validTransactions}
-
-📊 CORRECTED METRICS:
-• Revenue: RM${reconcileResult.totalRevenue.toFixed(2)}
-• Expenses: RM${reconcileResult.totalExpenses.toFixed(2)}
-• Net: RM${(reconcileResult.totalRevenue - reconcileResult.totalExpenses).toFixed(2)}
-
-🎉 All your transactions should now be visible!
-
-Try:
-• /delete - to see all transactions
-• /export - to download complete CSV
-• /insights - to see corrected dashboard`);
-      
-    } catch (error) {
-      console.error('Recovery command error:', error);
-      bot.sendMessage(userId, '❌ Recovery failed. Please contact support.');
+      console.error('Delete command error:', error);
+      bot.sendMessage(userId, '❌ Unable to show transactions.');
     }
   });
 
   // Export command
   bot.onText(/\/export/, async (msg) => {
     const userId = msg.from.id;
+    console.log(`📱 /export command from user ${userId}`);
     
     bot.sendChatAction(userId, 'upload_document');
     
     try {
-      await RedisService.rebuildTransactionList(userId);
       const csv = await RedisService.exportTransactions(userId, 'csv');
       
       if (csv && csv.length > 0) {
@@ -414,7 +384,7 @@ Try:
         fs.writeFileSync(tempFilePath, csv);
         
         await bot.sendDocument(userId, tempFilePath, {
-          caption: '📋 Your complete transaction history (CSV format)\n\nAll transactions included after recovery.'
+          caption: '📋 Your transaction history (CSV format)'
         });
         
         fs.unlinkSync(tempFilePath);
@@ -428,14 +398,375 @@ Try:
     }
   });
 
-  // Natural language transaction processing
-  bot.onText(/^(?!\/|💰|💸|📊|🔍|🗑️|❓)(.+)/, async (msg) => {
+  // Recurring commands - FIXED with number-based deletion
+  bot.onText(/\/recurring_list/, async (msg) => {
     const userId = msg.from.id;
-    const message = msg.text;
+    console.log(`📱 /recurring_list command from user ${userId}`);
+    
+    if (!RecurringService) {
+      bot.sendMessage(userId, '💫 Recurring transactions feature is coming soon!');
+      return;
+    }
+    
+    try {
+      const activeRecurring = await RecurringService.getActiveRecurring(userId);
+      
+      if (activeRecurring.length === 0) {
+        bot.sendMessage(userId, '💫 No active recurring transactions.\n\nCreate one by typing: "Monthly rent RM800"');
+        return;
+      }
+      
+      let message = `💫 ACTIVE RECURRING TRANSACTIONS\n\nReply with the number to delete:\n\n`;
+      
+      activeRecurring.forEach((recurring, index) => {
+        const emoji = recurring.type === 'income' ? '💰' : '💸';
+        const nextDue = new Date(recurring.next_due).toLocaleDateString();
+        message += `${index + 1}. ${emoji} ${recurring.description}\n`;
+        message += `   RM${recurring.amount_myr} • ${recurring.frequency} • Next: ${nextDue}\n\n`;
+      });
+      
+      message += `Type the number (1-${activeRecurring.length}) to delete:`;
+      
+      bot.sendMessage(userId, message);
+      
+      // Store recurring for deletion reference
+      await RedisService.setUserState(userId, 'awaiting_recurring_delete_number', activeRecurring);
+      
+    } catch (error) {
+      console.error('Recurring list error:', error);
+      bot.sendMessage(userId, '❌ Unable to list recurring transactions.');
+    }
+  });
+
+  // Forecast command
+  bot.onText(/\/forecast/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /forecast command from user ${userId}`);
+    
+    if (!CashflowService) {
+      bot.sendMessage(userId, '📊 Cashflow forecasting feature is coming soon!');
+      return;
+    }
     
     bot.sendChatAction(userId, 'typing');
     
     try {
+      const forecast = await CashflowService.generateForecast(userId, 6);
+      
+      let message = `📊 CASHFLOW FORECAST (6 MONTHS)\n\n`;
+      let cumulativeCash = 0;
+      
+      const metrics = await RedisService.getBusinessMetrics(userId);
+      const currentRevenue = parseFloat(metrics.total_revenue || 0);
+      const currentExpenses = parseFloat(metrics.total_expenses || 0);
+      cumulativeCash = currentRevenue - currentExpenses;
+      
+      forecast.forEach((month, index) => {
+        const netFlow = month.projected_income - month.projected_expenses;
+        cumulativeCash += netFlow;
+        const emoji = netFlow >= 0 ? '📈' : '📉';
+        
+        message += `${emoji} ${month.month}\n`;
+        message += `   Income: RM${month.projected_income.toFixed(2)}\n`;
+        message += `   Expenses: RM${month.projected_expenses.toFixed(2)}\n`;
+        message += `   Net: RM${netFlow.toFixed(2)}\n\n`;
+      });
+      
+      bot.sendMessage(userId, message);
+      
+    } catch (error) {
+      console.error('Forecast error:', error);
+      bot.sendMessage(userId, '❌ Unable to generate forecast.');
+    }
+  });
+
+  // Asset commands - UPDATED with deletion support
+  bot.onText(/\/assets_list/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /assets_list command from user ${userId}`);
+    
+    if (!AssetService) {
+      bot.sendMessage(userId, '💎 Asset management feature is coming soon!');
+      return;
+    }
+    
+    try {
+      const breakdown = await AssetService.getLiquidityBreakdown(userId);
+      const assets = await AssetService.getUserAssets(userId);
+      
+      if (breakdown.total_net_worth === 0) {
+        bot.sendMessage(userId, '💎 No assets found.\n\nAdd one by typing: "Add Bitcoin RM2000"');
+        return;
+      }
+      
+      let message = `💎 ASSET BREAKDOWN\n\n` +
+        `💧 Liquid: RM${breakdown.liquid.total.toFixed(2)} (${breakdown.liquid.assets.length} assets)\n` +
+        `🌊 Semi-Liquid: RM${breakdown.semi_liquid.total.toFixed(2)} (${breakdown.semi_liquid.assets.length} assets)\n` +
+        `🏔️ Illiquid: RM${breakdown.illiquid.total.toFixed(2)} (${breakdown.illiquid.assets.length} assets)\n\n` +
+        `📊 Total: RM${breakdown.total_net_worth.toFixed(2)}\n` +
+        `🌊 Liquidity Ratio: ${(breakdown.liquidity_ratio * 100).toFixed(1)}%\n\n`;
+      
+      if (assets.length > 0) {
+        message += `DETAILED ASSETS:\n`;
+        assets.forEach((asset, index) => {
+          const liquidityEmoji = asset.category === 'liquid' ? '💧' : 
+                               asset.category === 'semi_liquid' ? '🌊' : '🏔️';
+          message += `${index + 1}. ${liquidityEmoji} ${asset.name} - RM${asset.current_value_myr}\n`;
+        });
+        
+        message += `\nCommands:\n• /assets_add - Add new asset\n• /assets_delete - Delete asset`;
+      }
+      
+      bot.sendMessage(userId, message);
+      
+    } catch (error) {
+      console.error('Assets list error:', error);
+      bot.sendMessage(userId, '❌ Unable to load assets.');
+    }
+  });
+
+  bot.onText(/\/assets_add/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /assets_add command from user ${userId}`);
+    
+    bot.sendMessage(userId, `💎 ADD ASSET
+
+Type naturally:
+
+EXAMPLES:
+• "Add cash RM5000"
+• "Add Bitcoin RM2000"
+• "Add property RM500000"
+• "Add stocks RM15000"
+
+What asset would you like to add?`);
+    
+    await RedisService.setUserState(userId, 'awaiting_asset_input', 'general');
+  });
+
+  // NEW: Asset deletion command
+  bot.onText(/\/assets_delete/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /assets_delete command from user ${userId}`);
+    
+    if (!AssetService) {
+      bot.sendMessage(userId, '💎 Asset management feature is coming soon!');
+      return;
+    }
+    
+    try {
+      const assets = await AssetService.getUserAssets(userId);
+      
+      if (assets.length === 0) {
+        bot.sendMessage(userId, '💎 No assets to delete.\n\nAdd one first: "Add Bitcoin RM2000"');
+        return;
+      }
+      
+      let message = `💎 ALL ASSETS\n\nReply with the number to delete:\n\n`;
+      
+      assets.forEach((asset, index) => {
+        const liquidityEmoji = asset.category === 'liquid' ? '💧' : 
+                             asset.category === 'semi_liquid' ? '🌊' : '🏔️';
+        message += `${index + 1}. ${liquidityEmoji} ${asset.name}\n`;
+        message += `   RM${asset.current_value_myr} • ${asset.type}\n\n`;
+      });
+      
+      message += `Type the number (1-${assets.length}) to delete:`;
+      
+      bot.sendMessage(userId, message);
+      
+      // Store assets for deletion reference
+      await RedisService.setUserState(userId, 'awaiting_asset_delete_number', assets);
+      
+    } catch (error) {
+      console.error('Assets delete list error:', error);
+      bot.sendMessage(userId, '❌ Unable to list assets for deletion.');
+    }
+  });
+
+  // Recovery command
+  bot.onText(/\/recover/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /recover command from user ${userId}`);
+    
+    bot.sendChatAction(userId, 'typing');
+    
+    try {
+      bot.sendMessage(userId, '🔄 Starting recovery...');
+      
+      const allTransactions = await RedisService.findAllUserTransactions(userId);
+      await RedisService.rebuildTransactionList(userId);
+      const reconcileResult = await RedisService.reconcileBusinessMetrics(userId);
+      
+      bot.sendMessage(userId, `✅ RECOVERY COMPLETED!
+
+🔍 Found: ${allTransactions.length} transactions
+📊 Revenue: RM${reconcileResult.totalRevenue.toFixed(2)}
+📊 Expenses: RM${reconcileResult.totalExpenses.toFixed(2)}
+
+Try /transactions to see your data!`);
+      
+    } catch (error) {
+      console.error('Recovery error:', error);
+      bot.sendMessage(userId, '❌ Recovery failed. Please try again.');
+    }
+  });
+
+  // NEW: Manual metrics fix command
+  bot.onText(/\/fix_metrics/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /fix_metrics command from user ${userId}`);
+    
+    bot.sendChatAction(userId, 'typing');
+    
+    try {
+      bot.sendMessage(userId, '🔄 Fixing metrics...');
+      
+      // Rebuild everything
+      await RedisService.rebuildTransactionList(userId);
+      const reconcileResult = await RedisService.reconcileBusinessMetrics(userId);
+      
+      bot.sendMessage(userId, `✅ METRICS FIXED!
+
+📊 Corrected Data:
+• Transactions: ${reconcileResult.validTransactions}
+• Revenue: RM${reconcileResult.totalRevenue.toFixed(2)}
+• Expenses: RM${reconcileResult.totalExpenses.toFixed(2)}
+• Net: RM${(reconcileResult.totalRevenue - reconcileResult.totalExpenses).toFixed(2)}
+
+Try /insights now!`);
+      
+    } catch (error) {
+      console.error('Fix metrics error:', error);
+      bot.sendMessage(userId, '❌ Failed to fix metrics. Please try /recover');
+    }
+  });
+
+  // Debug command
+  bot.onText(/\/debug/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /debug command from user ${userId}`);
+    
+    try {
+      let message = `🔍 SYSTEM STATUS\n\n`;
+      
+      // Check services
+      message += `Services Available:\n`;
+      message += `• RedisService: ✅\n`;
+      message += `• AIService: ✅\n`;
+      message += `• RecurringService: ${RecurringService ? '✅' : '❌'}\n`;
+      message += `• CashflowService: ${CashflowService ? '✅' : '❌'}\n`;
+      message += `• AssetService: ${AssetService ? '✅' : '❌'}\n\n`;
+      
+      // Check user data
+      const transactions = await RedisService.findAllUserTransactions(userId);
+      const metrics = await RedisService.getBusinessMetrics(userId);
+      
+      message += `Your Data:\n`;
+      message += `• Transactions: ${transactions.length}\n`;
+      message += `• Revenue: RM${metrics.total_revenue || 0}\n`;
+      message += `• Expenses: RM${metrics.total_expenses || 0}\n`;
+      
+      bot.sendMessage(userId, message);
+      
+    } catch (error) {
+      console.error('Debug error:', error);
+      bot.sendMessage(userId, `❌ Debug failed: ${error.message}`);
+    }
+  });
+
+  // NEW: Status command
+  bot.onText(/\/status/, (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /status command from user ${userId}`);
+    
+    bot.sendMessage(userId, `🔍 SERVICE STATUS
+
+✅ Core Bot: Working
+✅ Redis: ${RedisService ? 'Working' : 'Error'}
+✅ AI: ${AIService ? 'Working' : 'Error'}
+${RecurringService ? '✅' : '❌'} Recurring: ${RecurringService ? 'Available' : 'Not Available'}
+${CashflowService ? '✅' : '❌'} Cashflow: ${CashflowService ? 'Available' : 'Not Available'}
+${AssetService ? '✅' : '❌'} Assets: ${AssetService ? 'Available' : 'Not Available'}
+
+Try /help for available commands.`);
+  });
+
+  // Natural language processing - SIMPLIFIED
+  bot.onText(/^(?!\/|💰|💸|📊|🔍|🗑️|❓|💎|💫)(.+)/, async (msg) => {
+    const userId = msg.from.id;
+    const message = msg.text;
+    console.log(`📱 Natural language from user ${userId}: ${message}`);
+    
+    // Check user state first
+    try {
+      const userState = await RedisService.getUserState(userId);
+      if (userState && userState.state) {
+        await handleUserState(bot, msg, userState);
+        return;
+      }
+    } catch (error) {
+      console.error('User state check error:', error);
+    }
+    
+    bot.sendChatAction(userId, 'typing');
+    
+    try {
+      // Check for recurring patterns
+      const recurringKeywords = ['monthly', 'weekly', 'daily', 'yearly'];
+      const isRecurringPattern = recurringKeywords.some(keyword => 
+        message.toLowerCase().includes(keyword)
+      );
+      
+      if (isRecurringPattern && RecurringService) {
+        try {
+          const parsedRecurring = await AIService.parseRecurringTransaction(message, userId);
+          
+          if (parsedRecurring && parsedRecurring.amount) {
+            const recurring = await RecurringService.createRecurringTransaction(userId, parsedRecurring);
+            
+            bot.sendMessage(userId, `✅ RECURRING SETUP
+
+💫 ${recurring.description}
+💵 RM${recurring.amount_myr} • ${recurring.frequency}
+📅 Next: ${new Date(recurring.next_due).toLocaleDateString()}
+
+Use /recurring_list to manage recurring transactions.`);
+            return;
+          }
+        } catch (error) {
+          console.error('Recurring creation error:', error);
+        }
+      }
+      
+      // Check for asset patterns
+      const assetKeywords = ['add cash', 'add bitcoin', 'add property', 'add stock'];
+      const isAssetPattern = assetKeywords.some(keyword => 
+        message.toLowerCase().includes(keyword)
+      );
+      
+      if (isAssetPattern && AssetService) {
+        try {
+          const parsedAsset = await AIService.parseAsset(message, userId);
+          
+          if (parsedAsset && parsedAsset.value) {
+            const asset = await AssetService.createAsset(userId, parsedAsset);
+            
+            bot.sendMessage(userId, `✅ ASSET ADDED
+
+💎 ${asset.name}
+💵 RM${asset.current_value_myr}
+📂 ${asset.type} • ${asset.liquidity_days} days
+
+Use /assets_list to view all assets.`);
+            return;
+          }
+        } catch (error) {
+          console.error('Asset creation error:', error);
+        }
+      }
+      
+      // Regular transaction processing
       const parsedTransaction = await AIService.parseTransaction(message, userId);
       
       if (parsedTransaction && parsedTransaction.amount) {
@@ -448,15 +779,7 @@ Try:
         
         const confirmationMessage = responses.transactionRecorded(transaction, balance);
         
-        bot.sendMessage(userId, confirmationMessage, {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '📊 View Insights', callback_data: 'show_insights' }],
-              [{ text: '🔍 Search Similar', callback_data: `search_${transaction.category}` }],
-              [{ text: '🗑️ Delete This', callback_data: `delete_${transaction.id}` }]
-            ]
-          }
-        });
+        bot.sendMessage(userId, confirmationMessage);
         
       } else {
         const hasAmount = /rm\s*\d+|\d+\s*rm|\d+/i.test(message);
@@ -464,8 +787,13 @@ Try:
         if (hasAmount) {
           bot.sendMessage(userId, responses.parseError);
         } else {
-          const response = await AIService.processQuery(userId, message);
-          bot.sendMessage(userId, response);
+          try {
+            const response = await AIService.processQueryEnhanced(userId, message);
+            bot.sendMessage(userId, response);
+          } catch (error) {
+            console.error('AI query error:', error);
+            bot.sendMessage(userId, responses.generalError);
+          }
         }
       }
       
@@ -475,213 +803,117 @@ Try:
     }
   });
 
-  // Help command
-  bot.onText(/❓ Help|\/help/, (msg) => {
+  // Handle user states - UPDATED with all deletion types
+  async function handleUserState(bot, msg, userState) {
     const userId = msg.from.id;
-    
-    bot.sendMessage(userId, `🤖 kheAI COMMANDS
-
-💰 FINANCIAL MANAGEMENT:
-• Type naturally: "Beli stock RM200"
-• /insights - Business analysis
-• /search [term] - Find transactions
-• /delete - Remove wrong transactions
-• /undo - Delete last transaction
-• /export - Download CSV
-
-🔧 RECOVERY & MAINTENANCE:
-• /recover - Find and restore lost transactions
-• /reconcile - Fix dashboard numbers
-
-🪙 BITCOIN TREASURY:
-• "Bitcoin price now?" - Current BTC price + advice
-• "Should I buy Bitcoin?" - Allocation recommendations
-• "How to buy Bitcoin safely?" - Security guidance
-
-⚙️ SETTINGS:
-• /setup - Business profile
-• /start - Restart bot
-
-📊 QUICK ACTIONS:
-• 💰 Add Income
-• 💸 Add Expense  
-• 📊 Insights
-• 🔍 Search
-• 🗑️ Delete
-
-EXAMPLE QUERIES:
-• "Rental income RM800"
-• "Bitcoin price now?"
-• "Beli inventory RM150"
-
-🆘 HAVING ISSUES?
-• /recover - Restore missing transactions
-• /reconcile - Fix incorrect dashboard numbers
-
-I understand Malay, English, and other languages, but respond in clear English for consistency.`);
-  });
-
-  // Handle all callback queries
-  bot.on('callback_query', async (query) => {
-    const userId = query.from.id;
-    const data = query.data;
+    console.log(`📱 Handling user state: ${userState.state} for user ${userId}`);
     
     try {
-      // Setup callbacks
-      if (data.startsWith('setup_')) {
-        const businessType = data.replace('setup_', '');
+      if (userState.state === 'awaiting_delete_number') {
+        const number = parseInt(msg.text);
+        const transactions = userState.data;
         
-        await RedisService.createUser(userId, {
-          name: query.from.first_name || 'User',
-          business_type: businessType,
-          language: 'en'
-        });
-        
-        bot.editMessageText(`✅ Business type set: ${businessType}
-
-🚀 You're all set! Here's what you can do:
-
-💬 NATURAL LANGUAGE BOOKKEEPING:
-Just type: "Beli inventory RM150" or "Sales RM500"
-
-📊 GET INSIGHTS:
-/insights - AI-powered business analysis
-
-🔍 SEARCH TRANSACTIONS:
-/search inventory - Find specific transactions
-
-🪙 BITCOIN TREASURY:
-Ask me: "Should I buy Bitcoin this month?"
-
-Ready to start? Try adding your first transaction! 💪`, {
-          chat_id: userId,
-          message_id: query.message.message_id
-        });
-      }
-      
-      // Show insights callback
-      if (data === 'show_insights') {
-        bot.sendChatAction(userId, 'typing');
-        
-        const metrics = await RedisService.getBusinessMetrics(userId);
-        const insights = await AIService.generateInsights(userId);
-        
-        const revenue = parseFloat(metrics.total_revenue || 0);
-        const expenses = parseFloat(metrics.total_expenses || 0);
-        const profit = revenue - expenses;
-        const profitMargin = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : 0;
-        
-        const dashboardMessage = responses.businessDashboard(revenue, expenses, profit, profitMargin, insights);
-        bot.sendMessage(userId, dashboardMessage);
-      }
-      
-      // Search similar transactions callback
-      if (data.startsWith('search_')) {
-        const category = data.replace('search_', '');
-        bot.sendChatAction(userId, 'typing');
-        
-        const results = await RedisService.searchTransactions(userId, category);
-        
-        if (results.documents && results.documents.length > 0) {
-          let message = `🔍 ${category.toUpperCase()} TRANSACTIONS\n\n`;
+        if (number >= 1 && number <= transactions.length) {
+          const txnToDelete = transactions[number - 1];
+          const result = await RedisService.deleteTransaction(userId, txnToDelete.id);
           
-          results.documents.forEach((doc, index) => {
-            const txn = doc.value;
-            message += `${index + 1}. ${txn.description} - RM${txn.amount_myr}\n`;
-          });
-          
-          bot.sendMessage(userId, message);
-        } else {
-          bot.sendMessage(userId, `No ${category} transactions found.`);
-        }
-      }
-
-      // Delete transaction callbacks
-      if (data.startsWith('delete_')) {
-        const transactionId = data.replace('delete_', '');
-        
-        const allTransactions = await RedisService.findAllUserTransactions(userId);
-        const txn = allTransactions.find(t => t.id === transactionId);
-        
-        if (!txn) {
-          bot.sendMessage(userId, '❌ Transaction not found.');
-          return;
-        }
-        
-        const emoji = txn.type === 'income' ? '💰' : '💸';
-        
-        bot.editMessageText(`🗑️ CONFIRM DELETION
-
-${emoji} ${txn.description}
-💵 Amount: RM${txn.amount_myr}
-📅 Date: ${new Date(txn.date).toLocaleDateString()}
-
-⚠️ This action cannot be undone. Are you sure?`, {
-          chat_id: userId,
-          message_id: query.message.message_id,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '✅ Yes, Delete', callback_data: `confirm_delete_${transactionId}` },
-                { text: '❌ Cancel', callback_data: 'cancel_delete' }
-              ]
-            ]
+          if (result.success) {
+            bot.sendMessage(userId, `✅ Deleted: ${txnToDelete.description} (RM${txnToDelete.amount_myr})`);
+          } else {
+            bot.sendMessage(userId, `❌ Failed to delete transaction.`);
           }
-        });
-      }
-      
-      // Confirm deletion
-      if (data.startsWith('confirm_delete_')) {
-        const transactionId = data.replace('confirm_delete_', '');
-        
-        const result = await RedisService.deleteTransaction(userId, transactionId);
-        
-        if (result.success) {
-          const transaction = result.transaction;
-          const emoji = transaction.type === 'income' ? '💰' : '💸';
-          
-          await RedisService.reconcileBusinessMetrics(userId);
-          const metrics = await RedisService.getBusinessMetrics(userId);
-          const revenue = parseFloat(metrics.total_revenue || 0);
-          const expenses = parseFloat(metrics.total_expenses || 0);
-          const balance = revenue - expenses;
-          
-          bot.editMessageText(`✅ TRANSACTION DELETED
-
-${emoji} ${transaction.description}
-💵 Amount: RM${transaction.amount_myr}
-
-📊 Updated Balance: RM${balance.toFixed(2)}
-
-The transaction has been removed from your records.`, {
-            chat_id: userId,
-            message_id: query.message.message_id
-          });
         } else {
-          bot.editMessageText(`❌ Failed to delete transaction: ${result.error}`, {
-            chat_id: userId,
-            message_id: query.message.message_id
-          });
+          bot.sendMessage(userId, `❌ Invalid number. Please choose 1-${transactions.length}`);
         }
+        
+        await RedisService.clearUserState(userId);
       }
       
-      // Cancel deletion
-      if (data === 'cancel_delete') {
-        bot.editMessageText(`❌ Deletion cancelled.
+      else if (userState.state === 'awaiting_recurring_delete_number') {
+        const number = parseInt(msg.text);
+        const recurringList = userState.data;
+        
+        if (number >= 1 && number <= recurringList.length) {
+          const recurringToDelete = recurringList[number - 1];
+          
+          if (RecurringService) {
+            const result = await RecurringService.deleteRecurring(userId, recurringToDelete.id);
+            
+            if (result.success) {
+              bot.sendMessage(userId, `✅ Deleted recurring: ${recurringToDelete.description} (RM${recurringToDelete.amount_myr}, ${recurringToDelete.frequency})`);
+            } else {
+              bot.sendMessage(userId, `❌ Failed to delete recurring transaction.`);
+            }
+          } else {
+            bot.sendMessage(userId, '💫 Recurring service not available.');
+          }
+        } else {
+          bot.sendMessage(userId, `❌ Invalid number. Please choose 1-${recurringList.length}`);
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
+      else if (userState.state === 'awaiting_asset_delete_number') {
+        const number = parseInt(msg.text);
+        const assetList = userState.data;
+        
+        if (number >= 1 && number <= assetList.length) {
+          const assetToDelete = assetList[number - 1];
+          
+          if (AssetService) {
+            const result = await AssetService.deleteAsset(userId, assetToDelete.id);
+            
+            if (result.success) {
+              bot.sendMessage(userId, `✅ Deleted asset: ${assetToDelete.name} (RM${assetToDelete.current_value_myr})`);
+            } else {
+              bot.sendMessage(userId, `❌ Failed to delete asset.`);
+            }
+          } else {
+            bot.sendMessage(userId, '💎 Asset service not available.');
+          }
+        } else {
+          bot.sendMessage(userId, `❌ Invalid number. Please choose 1-${assetList.length}`);
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
+      else if (userState.state === 'awaiting_asset_input') {
+        if (AssetService) {
+          try {
+            const parsedAsset = await AIService.parseAsset(msg.text, userId);
+            
+            if (parsedAsset && parsedAsset.value) {
+              const asset = await AssetService.createAsset(userId, parsedAsset);
+              
+              bot.sendMessage(userId, `✅ ASSET ADDED
 
-Your transaction remains in the records.`, {
-          chat_id: userId,
-          message_id: query.message.message_id
-        });
+💎 ${asset.name}
+💵 RM${asset.current_value_myr}
+📂 ${asset.type}
+
+Use /assets_list to view all assets.`);
+            } else {
+              bot.sendMessage(userId, `❌ Could not parse asset. Try: "Add cash RM5000"`);
+            }
+          } catch (error) {
+            console.error('Asset parsing error:', error);
+            bot.sendMessage(userId, `❌ Failed to add asset. Try: "Add Bitcoin RM2000"`);
+          }
+        } else {
+          bot.sendMessage(userId, '💎 Asset management feature is coming soon!');
+        }
+        
+        await RedisService.clearUserState(userId);
       }
       
     } catch (error) {
-      console.error('Callback query error:', error);
+      console.error('User state handling error:', error);
       bot.sendMessage(userId, '❌ Something went wrong. Please try again.');
+      await RedisService.clearUserState(userId);
     }
-    
-    bot.answerCallbackQuery(query.id);
-  });
+  }
 
   // Error handling
   bot.on('polling_error', (error) => {
@@ -692,7 +924,25 @@ Your transaction remains in the records.`, {
     console.error('Bot error:', error);
   });
 
-  console.log('✅ Bot handlers initialized');
+  // Background tasks - only if services are available
+  if (RecurringService && typeof RecurringService.processDueRecurring === 'function') {
+    setInterval(async () => {
+      try {
+        await RecurringService.processDueRecurring();
+      } catch (error) {
+        console.error('Recurring processing error:', error);
+      }
+    }, 60000); // Every minute
+    
+    console.log('✅ Recurring processor started');
+  }
+
+  console.log('✅ kheAI Bot initialized successfully');
+  console.log('🚀 Available commands: /help, /insights, /transactions, /search, /delete, /export');
+  if (RecurringService) console.log('💫 Recurring: /recurring_list');
+  if (CashflowService) console.log('📊 Cashflow: /forecast');
+  if (AssetService) console.log('💎 Assets: /assets_list, /assets_add, /assets_delete');
+  console.log('🔧 Maintenance: /recover, /fix_metrics, /debug, /status');
 }
 
 module.exports = { initializeBot };
