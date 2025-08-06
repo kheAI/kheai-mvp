@@ -30,17 +30,7 @@ npm install
 npm run dev
 ```
 
-### 5. Deploy to Railway
-```bash
-railway login
-railway link
-railway up
-
-# Set environment variables
-railway variables set TELEGRAM_BOT_TOKEN="your_token"
-railway variables set REDIS_URL="your_redis_url"
-railway variables set GEMINI_API_KEY="your_gemini_key"
-railway variables set NODE_ENV="production"
+### 5. Deploy 
 ```
 
 ## 🏗️ Architecture
@@ -49,7 +39,7 @@ railway variables set NODE_ENV="production"
 - **Backend**: Node.js + Express
 - **Database**: Redis Stack (JSON, Search, Streams, TimeSeries)
 - **AI**: Google Gemini Pro
-- **Deployment**: Railway
+- **Deployment**: Render
 
 ## 🔧 Features
 
@@ -81,7 +71,7 @@ Send /start to your Telegram bot
 ## 🚀 Production Deployment
 
 1. Set up Redis Cloud with required modules
-2. Deploy to Railway with environment variables
+2. Deploy to Render with environment variables
 3. Set webhook for production (optional)
 4. Monitor with health endpoint
 
