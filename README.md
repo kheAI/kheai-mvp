@@ -26,6 +26,7 @@ cp .env.example .env
 ### 4. Local Development
 
 ```bash
+npm install
 npm run dev
 ```
 

@@ -1,27 +1,25 @@
 const axios = require('axios');
 const redis = require('../../config/redis');
 
-class PriceFeedsService {
-  constructor() {
-    this.isRunning = false;
-  }
+let isRunning = false;
 
-  async startPriceMonitoring() {
-    if (this.isRunning) return;
+class PriceFeedsService {
+  static async startPriceMonitoring() {
+    if (isRunning) return;
     
-    this.isRunning = true;
-    console.log('🪙 Starting Bitcoin price monitoring...');
+    isRunning = true;
+    console.log('Starting Bitcoin price monitoring...');
     
     // Update prices every 5 minutes
     setInterval(async () => {
-      await this.updatePrices();
+      await PriceFeedsService.updatePrices();
     }, 5 * 60 * 1000);
     
     // Initial update
-    await this.updatePrices();
+    await PriceFeedsService.updatePrices();
   }
 
-  async updatePrices() {
+  static async updatePrices() {
     try {
       const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
         params: {
@@ -35,7 +33,18 @@ class PriceFeedsService {
       
       // Store in Redis TimeSeries
       const timestamp = Date.now();
-      await redis.ts.add('btc_myr_price', timestamp, btcMyr);
+      
+      // Create TimeSeries if it doesn't exist
+      try {
+        await redis.ts.add('btc_myr_price', timestamp, btcMyr);
+      } catch (error) {
+        if (error.message.includes('TSDB: the key does not exist')) {
+          await redis.ts.create('btc_myr_price');
+          await redis.ts.add('btc_myr_price', timestamp, btcMyr);
+        } else {
+          throw error;
+        }
+      }
       
       // Store latest price for quick access
       await redis.hSet('latest_prices', {
@@ -50,7 +59,7 @@ class PriceFeedsService {
     }
   }
 
-  async getCurrentPrices() {
+  static async getCurrentPrices() {
     try {
       return await redis.hGetAll('latest_prices');
     } catch (error) {
@@ -59,7 +68,7 @@ class PriceFeedsService {
     }
   }
 
-  async getPriceHistory(hours = 24) {
+  static async getPriceHistory(hours = 24) {
     try {
       const fromTime = Date.now() - (hours * 60 * 60 * 1000);
       return await redis.ts.range('btc_myr_price', fromTime, '+');
@@ -70,4 +79,4 @@ class PriceFeedsService {
   }
 }
 
-module.exports = new PriceFeedsService();
+module.exports = PriceFeedsService;

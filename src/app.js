@@ -3,7 +3,7 @@ const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const redis = require('../config/redis');
 const { initializeBot } = require('./bot/bot');
-const { startPriceMonitoring } = require('./services/priceFeeds');
+const PriceFeedsService = require('./services/priceFeeds'); // Updated import
 const { createSearchIndexes } = require('./services/redis');
 
 // Validate environment variables
@@ -33,7 +33,7 @@ async function startApp() {
     initializeBot(bot);
     
     // Start background services
-    startPriceMonitoring();
+    await PriceFeedsService.startPriceMonitoring(); // Updated call
     
     // Express server for health checks
     const app = express();
