@@ -355,16 +355,79 @@ class RedisService {
     return contexts.map(ctx => JSON.parse(ctx));
   }
 
-  // Search functionality
+  // Enhanced search functionality
   async searchTransactions(userId, query) {
     try {
-      const results = await redis.ft.search('transactions_idx', 
-        `@user_id:${userId.toString()} @description:${query}*`,
-        { LIMIT: { from: 0, size: 10 } }
-      );
+      let searchQuery;
+      const baseFilter = `@user_id:${userId.toString()}`;
+      
+      // Detect search type and build appropriate query
+      if (query.match(/^rm\s*\d+/i) || query.match(/^\d+/)) {
+        // Amount search: "RM800" or "800"
+        const amount = query.replace(/rm\s*/i, '').replace(/[^\d.]/g, '');
+        if (amount) {
+          searchQuery = `${baseFilter} @amount:[${amount} ${amount}]`;
+        }
+      } else if (['inventory', 'rent', 'utilities', 'marketing', 'supplies', 'revenue', 'rental', 'other'].includes(query.toLowerCase())) {
+        // Category search: exact match
+        searchQuery = `${baseFilter} @category:{${query.toLowerCase()}}`;
+      } else {
+        // Description search: fuzzy text search
+        searchQuery = `${baseFilter} @description:*${query}*`;
+      }
+      
+      console.log('Search query:', searchQuery); // Debug log
+      
+      const results = await redis.ft.search('transactions_idx', searchQuery, {
+        LIMIT: { from: 0, size: 20 },
+        SORTBY: { BY: 'amount', DIRECTION: 'DESC' }
+      });
+      
       return results;
     } catch (error) {
       console.error('Search error:', error);
+      
+      // Fallback: manual search through user's transactions
+      return await this.fallbackSearch(userId, query);
+    }
+  }
+
+  // Fallback search when RedisSearch fails
+  async fallbackSearch(userId, query) {
+    try {
+      const allTransactions = await this.findAllUserTransactions(userId);
+      const lowerQuery = query.toLowerCase();
+      
+      const matchedTransactions = allTransactions.filter(txn => {
+        // Amount search
+        if (query.match(/^rm\s*\d+/i) || query.match(/^\d+/)) {
+          const searchAmount = parseFloat(query.replace(/rm\s*/i, '').replace(/[^\d.]/g, ''));
+          return Math.abs(txn.amount_myr - searchAmount) < 0.01;
+        }
+        
+        // Category search
+        if (txn.category && txn.category.toLowerCase().includes(lowerQuery)) {
+          return true;
+        }
+        
+        // Description search
+        if (txn.description && txn.description.toLowerCase().includes(lowerQuery)) {
+          return true;
+        }
+        
+        return false;
+      });
+      
+      // Format to match RedisSearch response structure
+      return {
+        total: matchedTransactions.length,
+        documents: matchedTransactions.map(txn => ({
+          id: `transaction:${txn.id}`,
+          value: txn
+        }))
+      };
+    } catch (error) {
+      console.error('Fallback search error:', error);
       return { documents: [] };
     }
   }
@@ -418,18 +481,49 @@ class RedisService {
   }
 }
 
-// Create search indexes
+// Create search indexes (updated)
 async function createSearchIndexes() {
   try {
-    await redis.ft.create('transactions_idx', {
-      '$.user_id': { type: 'TEXT', AS: 'user_id' },
-      '$.description': { type: 'TEXT', AS: 'description' },
-      '$.category': { type: 'TAG', AS: 'category' },
-      '$.amount_myr': { type: 'NUMERIC', AS: 'amount' },
-      '$.type': { type: 'TAG', AS: 'type' }
-    }, { ON: 'JSON', PREFIX: 'transaction:' });
+    // Delete existing index if it exists
+    try {
+      await redis.ft.dropIndex('transactions_idx');
+    } catch (e) {
+      // Index doesn't exist, continue
+    }
     
-    console.log('✅ Search indexes created');
+    // Create new index with proper field types
+    await redis.ft.create('transactions_idx', {
+      '$.user_id': { 
+        type: 'TEXT', 
+        AS: 'user_id' 
+      },
+      '$.description': { 
+        type: 'TEXT', 
+        AS: 'description',
+        PHONETIC: 'dm:en'
+      },
+      '$.category': { 
+        type: 'TAG', 
+        AS: 'category' 
+      },
+      '$.amount_myr': { 
+        type: 'NUMERIC', 
+        AS: 'amount' 
+      },
+      '$.type': { 
+        type: 'TAG', 
+        AS: 'type' 
+      },
+      '$.date': { 
+        type: 'TEXT', 
+        AS: 'date' 
+      }
+    }, { 
+      ON: 'JSON', 
+      PREFIX: 'transaction:' 
+    });
+    
+    console.log('✅ Search indexes created successfully');
   } catch (error) {
     if (error.message.includes('Index already exists')) {
       console.log('✅ Search indexes already exist');

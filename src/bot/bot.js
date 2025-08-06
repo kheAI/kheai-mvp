@@ -194,19 +194,29 @@ What type of business do you run?`, {
     }
   });
 
-  // Search command
+  // Enhanced search command
   bot.onText(/🔍 Search|\/search(?:\s+(.+))?/, async (msg, match) => {
     const userId = msg.from.id;
     const query = match && match[1];
     
     if (!query) {
-      bot.sendMessage(userId, responses.searchPrompt);
+      bot.sendMessage(userId, `🔍 SEARCH TRANSACTIONS
+
+EXAMPLES:
+• /search rental - Find by category
+• /search inventory - Find inventory transactions
+• /search RM800 - Find specific amount
+• /search supplier - Find by description
+
+What would you like to search for?`);
       return;
     }
     
     bot.sendChatAction(userId, 'typing');
     
     try {
+      console.log(`🔍 Searching for: "${query}" (user: ${userId})`);
+      
       const results = await RedisService.searchTransactions(userId, query);
       
       if (results.documents && results.documents.length > 0) {
@@ -216,25 +226,40 @@ What type of business do you run?`, {
         results.documents.slice(0, 10).forEach((doc, index) => {
           const txn = doc.value;
           const emoji = txn.type === 'income' ? '💰' : '💸';
-          message += `${emoji} ${txn.description}\n`;
-          message += `   RM${txn.amount_myr} • ${txn.category}\n\n`;
+          const date = new Date(txn.date).toLocaleDateString();
+          message += `${index + 1}. ${emoji} ${txn.description}\n`;
+          message += `   RM${txn.amount_myr} • ${txn.category} • ${date}\n\n`;
           total += txn.amount_myr;
         });
         
         message += `📊 Total Found: RM${total.toFixed(2)}`;
+        message += `\n🔢 Results: ${results.documents.length} transaction${results.documents.length > 1 ? 's' : ''}`;
         
         if (results.documents.length > 10) {
-          message += `\n\nShowing first 10 of ${results.documents.length} results`;
+          message += `\n\n*Showing first 10 of ${results.documents.length} results*`;
         }
         
-        bot.sendMessage(userId, message);
+        bot.sendMessage(userId, message, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📊 Analyze Results', callback_data: `analyze_${query}` }],
+              [{ text: '📋 Export Results', callback_data: `export_search_${query}` }]
+            ]
+          }
+        });
       } else {
         bot.sendMessage(userId, `🔍 No transactions found for "${query}"
 
-Try searching for:
-• Category names (inventory, rent, sales)
-• Amounts (RM100, RM500)
-• Descriptions (supplier, customer)`);
+TRY THESE SEARCH TYPES:
+• **Categories**: rental, inventory, rent, utilities
+• **Amounts**: RM800, 150, RM1200  
+• **Descriptions**: supplier, customer, shop
+• **Types**: income, expense
+
+EXAMPLES:
+• /search rental income
+• /search RM800
+• /search inventory`);
       }
       
     } catch (error) {
