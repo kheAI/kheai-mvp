@@ -1,6 +1,109 @@
 const AIService = require('../services/ai');
 const { RedisService } = require('../services/redis');
 
+// English-first response templates
+const responses = {
+  welcome: `🎉 Welcome to kheAI!
+
+Your AI-powered bookkeeper for Malaysian microbusinesses.
+
+🔹 Track expenses & income via chat
+🔹 Get Bitcoin treasury advice  
+🔹 Real-time business insights
+🔹 Malaysian tax guidance
+
+Try these commands:
+/setup - Configure your business
+/insights - Get business analysis
+/help - See all commands
+
+Or just type naturally: "Beli inventory RM150" or "Sales RM500"`,
+
+  welcomeBack: (name) => `Welcome back, ${name}! 👋
+
+Ready to manage your business finances?`,
+
+  transactionRecorded: (txn, balance) => `✅ TRANSACTION RECORDED
+
+${txn.type === 'income' ? '💰' : '💸'} ${txn.description}
+💵 Amount: RM${txn.amount_myr.toFixed(2)}
+📂 Category: ${txn.category}
+📅 Date: ${new Date(txn.date).toLocaleDateString()}
+
+📊 Current Balance: RM${balance.toFixed(2)}`,
+
+  businessDashboard: (revenue, expenses, profit, profitMargin, insights) => `📊 BUSINESS DASHBOARD
+
+THIS MONTH:
+💰 Revenue: RM${revenue.toFixed(2)}
+💸 Expenses: RM${expenses.toFixed(2)}
+📈 Profit: RM${profit.toFixed(2)}
+📊 Margin: ${profitMargin}%
+
+AI INSIGHTS:
+${insights}`,
+
+  addIncomePrompt: `💰 ADD INCOME
+
+Just tell me naturally:
+
+EXAMPLES:
+• "Sales RM500 today"
+• "Received payment RM1200"
+• "Rental income RM800"
+
+Type your income below: 👇`,
+
+  addExpensePrompt: `💸 ADD EXPENSE
+
+Just tell me naturally:
+
+EXAMPLES:
+• "Beli inventory RM150"
+• "Bayar rent RM800"
+• "Petrol RM50"
+
+Type your expense below: 👇`,
+
+  searchPrompt: `🔍 SEARCH TRANSACTIONS
+
+EXAMPLES:
+• /search inventory
+• /search rent  
+• /search RM500
+
+What would you like to search for?`,
+
+  noTransactionsToDelete: `🗑️ No transactions to delete.
+
+Add some transactions first:
+• "Sales RM500"
+• "Beli inventory RM150"`,
+
+  noTransactionsToUndo: `🗑️ No transactions to undo.`,
+
+  parseError: `❌ I couldn't parse that transaction.
+
+Try these formats:
+• "Rental income RM800"
+• "Sales RM500"
+• "Beli inventory RM150"
+• "Bayar rent RM800"
+
+Or ask me anything about your business! 🤖`,
+
+  generalError: `❌ Sorry, I couldn't process that.
+
+Try being more specific:
+• "Rental income RM800"
+• "Sales RM500" 
+• "Beli inventory RM150"
+• "Bitcoin price now?"
+• "How to buy Bitcoin safely?"
+
+Or ask me anything about your business! 🤖`
+};
+
 function initializeBot(bot) {
   // Welcome & Onboarding
   bot.onText(/\/start/, async (msg) => {
@@ -13,21 +116,7 @@ function initializeBot(bot) {
         language: 'en'
       });
       
-      bot.sendMessage(userId, `🎉 Welcome to kheAI!
-
-I'm your AI-powered bookkeeper for Malaysian microbusinesses.
-
-🔹 Track expenses & income via chat
-🔹 Get Bitcoin treasury advice  
-🔹 Real-time business insights
-🔹 Malaysian tax guidance
-
-Try these commands:
-/setup - Configure your business
-/insights - Get business analysis
-/help - See all commands
-
-Or just type naturally: "Beli inventory RM150"`, {
+      bot.sendMessage(userId, responses.welcome, {
         reply_markup: {
           keyboard: [
             ['💰 Add Income', '💸 Add Expense'],
@@ -38,9 +127,7 @@ Or just type naturally: "Beli inventory RM150"`, {
         }
       });
     } else {
-      bot.sendMessage(userId, `Welcome back, ${user.name}! 👋
-
-Ready to manage your business finances?`, {
+      bot.sendMessage(userId, responses.welcomeBack(user.name), {
         reply_markup: {
           keyboard: [
             ['💰 Add Income', '💸 Add Expense'],
@@ -73,21 +160,14 @@ What type of business do you run?`, {
   });
 
   // Quick action buttons
-  bot.onText(/💰 Add Income|💸 Add Expense/, async (msg) => {
+  bot.onText(/💰 Add Income/, async (msg) => {
     const userId = msg.from.id;
-    const isIncome = msg.text.includes('Income');
-    
-    bot.sendMessage(userId, `${isIncome ? '💰' : '💸'} ${isIncome ? 'ADD INCOME' : 'ADD EXPENSE'}
+    bot.sendMessage(userId, responses.addIncomePrompt);
+  });
 
-Just tell me naturally:
-
-EXAMPLES:
-${isIncome ? 
-  '• "Sales RM500 today"\n• "Received payment RM1200"\n• "Rental income RM800"' :
-  '• "Beli inventory RM150"\n• "Bayar rent RM800"\n• "Petrol RM50"'
-}
-
-Type your transaction below: 👇`);
+  bot.onText(/💸 Add Expense/, async (msg) => {
+    const userId = msg.from.id;
+    bot.sendMessage(userId, responses.addExpensePrompt);
   });
 
   // Insights command
@@ -105,18 +185,7 @@ Type your transaction below: 👇`);
       const profit = revenue - expenses;
       const profitMargin = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : 0;
       
-      // Format message for Telegram (no markdown)
-      const dashboardMessage = `📊 BUSINESS DASHBOARD
-
-THIS MONTH:
-💰 Revenue: RM${revenue.toFixed(2)}
-💸 Expenses: RM${expenses.toFixed(2)}
-📈 Profit: RM${profit.toFixed(2)}
-📊 Margin: ${profitMargin}%
-
-AI INSIGHTS:
-${insights}`;
-      
+      const dashboardMessage = responses.businessDashboard(revenue, expenses, profit, profitMargin, insights);
       bot.sendMessage(userId, dashboardMessage);
       
     } catch (error) {
@@ -131,14 +200,7 @@ ${insights}`;
     const query = match && match[1];
     
     if (!query) {
-      bot.sendMessage(userId, `🔍 SEARCH TRANSACTIONS
-
-EXAMPLES:
-• /search inventory
-• /search rent  
-• /search RM500
-
-What would you like to search for?`);
+      bot.sendMessage(userId, responses.searchPrompt);
       return;
     }
     
@@ -188,15 +250,10 @@ Try searching for:
     bot.sendChatAction(userId, 'typing');
     
     try {
-      // Use findAllUserTransactions to show ALL transactions
       const transactions = await RedisService.findAllUserTransactions(userId);
       
       if (transactions.length === 0) {
-        bot.sendMessage(userId, `🗑️ No transactions to delete.
-
-Add some transactions first:
-• "Sales RM500"
-• "Beli inventory RM150"`);
+        bot.sendMessage(userId, responses.noTransactionsToDelete);
         return;
       }
       
@@ -207,7 +264,7 @@ Select a transaction to delete:
 `;
       
       const keyboard = [];
-      transactions.slice(0, 15).forEach((txn, index) => { // Show up to 15 transactions
+      transactions.slice(0, 15).forEach((txn, index) => {
         const emoji = txn.type === 'income' ? '💰' : '💸';
         const date = new Date(txn.date).toLocaleDateString();
         message += `${index + 1}. ${emoji} ${txn.description} - RM${txn.amount_myr} (${date})\n`;
@@ -244,11 +301,11 @@ Select a transaction to delete:
       const transactions = await RedisService.findAllUserTransactions(userId);
       
       if (transactions.length === 0) {
-        bot.sendMessage(userId, '🗑️ No transactions to undo.');
+        bot.sendMessage(userId, responses.noTransactionsToUndo);
         return;
       }
       
-      const lastTransaction = transactions[0]; // First one is newest
+      const lastTransaction = transactions[0];
       const emoji = lastTransaction.type === 'income' ? '💰' : '💸';
       
       bot.sendMessage(userId, `🗑️ UNDO LAST TRANSACTION
@@ -283,13 +340,8 @@ Are you sure you want to delete this transaction?`, {
     try {
       bot.sendMessage(userId, '🔄 STARTING RECOVERY PROCESS...\n\nThis may take a moment...');
       
-      // Step 1: Find all transactions
       const allTransactions = await RedisService.findAllUserTransactions(userId);
-      
-      // Step 2: Rebuild transaction list
       await RedisService.rebuildTransactionList(userId);
-      
-      // Step 3: Reconcile metrics
       const reconcileResult = await RedisService.reconcileBusinessMetrics(userId);
       
       bot.sendMessage(userId, `✅ RECOVERY COMPLETED!
@@ -303,7 +355,7 @@ Are you sure you want to delete this transaction?`, {
 • Expenses: RM${reconcileResult.totalExpenses.toFixed(2)}
 • Net: RM${(reconcileResult.totalRevenue - reconcileResult.totalExpenses).toFixed(2)}
 
-🎉 All your rental income transactions should now be visible!
+🎉 All your transactions should now be visible!
 
 Try:
 • /delete - to see all transactions
@@ -316,41 +368,14 @@ Try:
     }
   });
 
-  // Reconcile command (for fixing metrics)
-  bot.onText(/\/reconcile/, async (msg) => {
-    const userId = msg.from.id;
-    
-    bot.sendChatAction(userId, 'typing');
-    
-    try {
-      const result = await RedisService.reconcileBusinessMetrics(userId);
-      
-      bot.sendMessage(userId, `🔄 METRICS RECONCILED
-
-✅ Fixed business dashboard numbers:
-• Valid transactions: ${result.validTransactions}
-• Revenue: RM${result.totalRevenue.toFixed(2)}
-• Expenses: RM${result.totalExpenses.toFixed(2)}
-• Profit: RM${(result.totalRevenue - result.totalExpenses).toFixed(2)}
-
-Your dashboard should now show correct numbers!`);
-      
-    } catch (error) {
-      console.error('Reconcile command error:', error);
-      bot.sendMessage(userId, '❌ Reconciliation failed. Please try again.');
-    }
-  });
-
-  // Export command (with recovery)
+  // Export command
   bot.onText(/\/export/, async (msg) => {
     const userId = msg.from.id;
     
     bot.sendChatAction(userId, 'upload_document');
     
     try {
-      // Auto-recovery before export to ensure we get ALL transactions
       await RedisService.rebuildTransactionList(userId);
-      
       const csv = await RedisService.exportTransactions(userId, 'csv');
       
       if (csv && csv.length > 0) {
@@ -358,19 +383,15 @@ Your dashboard should now show correct numbers!`);
         const path = require('path');
         const os = require('os');
         
-        // Create temporary file
         const filename = `kheAI_transactions_${userId}_${Date.now()}.csv`;
         const tempFilePath = path.join(os.tmpdir(), filename);
         
-        // Write CSV to temporary file
         fs.writeFileSync(tempFilePath, csv);
         
-        // Send the file
         await bot.sendDocument(userId, tempFilePath, {
           caption: '📋 Your complete transaction history (CSV format)\n\nAll transactions included after recovery.'
         });
         
-        // Clean up temporary file
         fs.unlinkSync(tempFilePath);
         
       } else {
@@ -382,30 +403,6 @@ Your dashboard should now show correct numbers!`);
     }
   });
 
-  // Cleanup command (for debugging)
-  bot.onText(/\/cleanup/, async (msg) => {
-    const userId = msg.from.id;
-    
-    bot.sendChatAction(userId, 'typing');
-    
-    try {
-      const validCount = await RedisService.cleanupTransactionList(userId);
-      
-      bot.sendMessage(userId, `🧹 CLEANUP COMPLETED
-
-✅ Found ${validCount} valid transactions
-🗑️ Removed invalid references
-
-Your transaction list is now clean!
-
-Try /export again to get only valid transactions.`);
-      
-    } catch (error) {
-      console.error('Cleanup command error:', error);
-      bot.sendMessage(userId, '❌ Cleanup failed. Please try again.');
-    }
-  });
-
   // Natural language transaction processing
   bot.onText(/^(?!\/|💰|💸|📊|🔍|🗑️|❓)(.+)/, async (msg) => {
     const userId = msg.from.id;
@@ -414,28 +411,17 @@ Try /export again to get only valid transactions.`);
     bot.sendChatAction(userId, 'typing');
     
     try {
-      // Try to parse as transaction first
       const parsedTransaction = await AIService.parseTransaction(message, userId);
       
       if (parsedTransaction && parsedTransaction.amount) {
-        // Create transaction
         const transaction = await RedisService.createTransaction(userId, parsedTransaction);
         
-        // Get updated balance
         const metrics = await RedisService.getBusinessMetrics(userId);
         const revenue = parseFloat(metrics.total_revenue || 0);
         const expenses = parseFloat(metrics.total_expenses || 0);
         const balance = revenue - expenses;
         
-        // Clean Telegram formatting
-        const confirmationMessage = `✅ TRANSACTION RECORDED
-
-${transaction.type === 'income' ? '💰' : '💸'} ${transaction.description}
-💵 Amount: RM${transaction.amount_myr.toFixed(2)}
-📂 Category: ${transaction.category}
-📅 Date: ${new Date(transaction.date).toLocaleDateString()}
-
-📊 Current Balance: RM${balance.toFixed(2)}`;
+        const confirmationMessage = responses.transactionRecorded(transaction, balance);
         
         bot.sendMessage(userId, confirmationMessage, {
           reply_markup: {
@@ -448,44 +434,23 @@ ${transaction.type === 'income' ? '💰' : '💸'} ${transaction.description}
         });
         
       } else {
-        // Check if it looks like a transaction but failed to parse
         const hasAmount = /rm\s*\d+|\d+\s*rm|\d+/i.test(message);
         
         if (hasAmount) {
-          // Looks like a transaction but failed to parse
-          bot.sendMessage(userId, `❌ I couldn't parse that transaction.
-
-Try these formats:
-• "Rental income RM800"
-• "Received rental RM800"
-• "Sales RM500"
-• "Beli inventory RM150"
-• "Bayar rent RM800"
-
-Or ask me anything about your business! 🤖`);
+          bot.sendMessage(userId, responses.parseError);
         } else {
-          // Process as AI query with enhanced handling
-          const response = await AIService.processQueryEnhanced(userId, message);
+          const response = await AIService.processQuery(userId, message);
           bot.sendMessage(userId, response);
         }
       }
       
     } catch (error) {
       console.error('Message processing error:', error);
-      bot.sendMessage(userId, `❌ Sorry, I couldn't process that.
-
-Try being more specific:
-• "Rental income RM800"
-• "Sales RM500" 
-• "Beli inventory RM150"
-• "Bitcoin price now?"
-• "How to buy Bitcoin safely?"
-
-Or ask me anything about your business! 🤖`);
+      bot.sendMessage(userId, responses.generalError);
     }
   });
 
-  // Help command (updated with recovery)
+  // Help command
   bot.onText(/❓ Help|\/help/, (msg) => {
     const userId = msg.from.id;
     
@@ -502,7 +467,6 @@ Or ask me anything about your business! 🤖`);
 🔧 RECOVERY & MAINTENANCE:
 • /recover - Find and restore lost transactions
 • /reconcile - Fix dashboard numbers
-• /cleanup - Fix transaction list
 
 🪙 BITCOIN TREASURY:
 • "Bitcoin price now?" - Current BTC price + advice
@@ -528,9 +492,8 @@ EXAMPLE QUERIES:
 🆘 HAVING ISSUES?
 • /recover - Restore missing transactions
 • /reconcile - Fix incorrect dashboard numbers
-• /cleanup - Clean up transaction list
 
-Just chat with me naturally! I understand both English and Bahasa Malaysia. 🇲🇾`);
+I understand Malay, English, and other languages, but respond in clear English for consistency.`);
   });
 
   // Handle all callback queries
@@ -583,17 +546,7 @@ Ready to start? Try adding your first transaction! 💪`, {
         const profit = revenue - expenses;
         const profitMargin = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : 0;
         
-        const dashboardMessage = `📊 BUSINESS DASHBOARD
-
-THIS MONTH:
-💰 Revenue: RM${revenue.toFixed(2)}
-💸 Expenses: RM${expenses.toFixed(2)}
-📈 Profit: RM${profit.toFixed(2)}
-📊 Margin: ${profitMargin}%
-
-AI INSIGHTS:
-${insights}`;
-        
+        const dashboardMessage = responses.businessDashboard(revenue, expenses, profit, profitMargin, insights);
         bot.sendMessage(userId, dashboardMessage);
       }
       
@@ -622,7 +575,6 @@ ${insights}`;
       if (data.startsWith('delete_')) {
         const transactionId = data.replace('delete_', '');
         
-        // Get transaction details for confirmation using findAllUserTransactions
         const allTransactions = await RedisService.findAllUserTransactions(userId);
         const txn = allTransactions.find(t => t.id === transactionId);
         
@@ -663,7 +615,6 @@ ${emoji} ${txn.description}
           const transaction = result.transaction;
           const emoji = transaction.type === 'income' ? '💰' : '💸';
           
-          // Get updated balance after reconciliation
           await RedisService.reconcileBusinessMetrics(userId);
           const metrics = await RedisService.getBusinessMetrics(userId);
           const revenue = parseFloat(metrics.total_revenue || 0);
@@ -697,45 +648,6 @@ Your transaction remains in the records.`, {
           chat_id: userId,
           message_id: query.message.message_id
         });
-      }
-
-      // Export CSV callback
-      if (data === 'export_csv') {
-        bot.sendChatAction(userId, 'upload_document');
-        
-        try {
-          // Auto-recovery before export
-          await RedisService.rebuildTransactionList(userId);
-          
-          const csv = await RedisService.exportTransactions(userId, 'csv');
-          
-          if (csv && csv.length > 0) {
-            const fs = require('fs');
-            const path = require('path');
-            const os = require('os');
-            
-            // Create temporary file
-            const filename = `kheAI_transactions_${userId}_${Date.now()}.csv`;
-            const tempFilePath = path.join(os.tmpdir(), filename);
-            
-            // Write CSV to temporary file
-            fs.writeFileSync(tempFilePath, csv);
-            
-            // Send the file
-            await bot.sendDocument(userId, tempFilePath, {
-              caption: '📋 Your complete transaction history exported successfully!'
-            });
-            
-            // Clean up temporary file
-            fs.unlinkSync(tempFilePath);
-            
-          } else {
-            bot.sendMessage(userId, '❌ No transactions to export.');
-          }
-        } catch (error) {
-          console.error('Export CSV error:', error);
-          bot.sendMessage(userId, '❌ Export failed. Please try again.');
-        }
       }
       
     } catch (error) {
