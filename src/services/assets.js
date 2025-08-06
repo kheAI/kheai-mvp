@@ -17,34 +17,48 @@ class AssetService {
         liquidity_days: this.getLiquidityDays(assetData.type),
         is_active: true,
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        price_history: [{
-          date: new Date().toISOString(),
-          value: parseFloat(assetData.value)
-        }]
+        updated_at: new Date().toISOString()
       };
 
-      // Store asset using RedisJSON
+      // Store asset
       await redis.json.set(`asset:${assetId}`, '$', asset);
-      
-      // Add to user's asset list
       await redis.lPush(`user:${userId}:assets`, assetId);
-      
-      // Add to category index
-      await redis.sAdd(`assets:${asset.category}`, assetId);
-      
-      // Add to type index
-      await redis.sAdd(`assets:type:${asset.type}`, assetId);
-      
-      // Add to stream for tracking
-      await redis.xAdd('assets_created', '*', {
-        user_id: userId.toString(),
-        asset_id: assetId.toString(),
-        type: asset.type,
-        category: asset.category,
-        value: asset.current_value_myr.toString(),
-        timestamp: Date.now().toString()
-      });
+
+      // CREATE JOURNAL ENTRY FOR ASSET ADDITION
+      if (LedgerService) {
+        try {
+          let assetAccountCode = '1000'; // Default to Cash
+          let equityAccountCode = '3000'; // Owner's Equity
+          
+          // Determine correct asset account
+          if (assetData.type === 'cash') assetAccountCode = '1000';
+          else if (assetData.type === 'bank_savings') assetAccountCode = '1100';
+          else if (assetData.type === 'crypto') assetAccountCode = '1800';
+          else if (assetData.type === 'property') assetAccountCode = '1700';
+          else if (assetData.type === 'stocks') assetAccountCode = '1800';
+          
+          await LedgerService.createJournalEntry(userId, {
+            description: `Initial ${assetData.name} asset`,
+            reference: `ASSET-${assetId.substring(0, 8)}`,
+            lines: [
+              {
+                account_code: assetAccountCode,
+                debit: parseFloat(assetData.value),
+                credit: 0,
+                description: `Add ${assetData.name}`
+              },
+              {
+                account_code: equityAccountCode,
+                debit: 0,
+                credit: parseFloat(assetData.value),
+                description: `Owner contribution - ${assetData.name}`
+              }
+            ]
+          });
+        } catch (journalError) {
+          console.error('Asset journal entry error:', journalError);
+        }
+      }
 
       console.log(`✅ Created asset: ${assetId} for user ${userId}`);
       return asset;

@@ -712,6 +712,108 @@ Return ONLY the JSON object:`;
     }
     return date.toISOString();
   }
+
+  async parseJournalEntry(message, userId) {
+    const prompt = `Parse this accounting journal entry into structured data:
+Message: "${message}"
+
+Extract and return ONLY valid JSON:
+{
+  "description": "journal entry description",
+  "lines": [
+    {
+      "account_code": "account_number",
+      "account_name": "account_name", 
+      "debit": number_or_0,
+      "credit": number_or_0,
+      "description": "line_description"
+    }
+  ]
+}
+
+MALAYSIAN CHART OF ACCOUNTS:
+Assets: 1000-1999 (Cash=1000, Bank=1100, AR=1200, Inventory=1300, Equipment=1500)
+Liabilities: 2000-2999 (AP=2000, GST=2300, Loans=2500)
+Equity: 3000-3999 (Owner's Equity=3000, Retained Earnings=3100)
+Revenue: 4000-4999 (Sales=4000, Service=4100, Rental=4200)
+Expenses: 5000-5999 (COGS=5000, Rent=5100, Utilities=5200, Marketing=5300)
+
+EXAMPLES:
+"Paid rent RM800" → 
+{
+  "description": "Rent payment",
+  "lines": [
+    {"account_code": "5100", "account_name": "Rent Expense", "debit": 800, "credit": 0, "description": "Monthly rent"},
+    {"account_code": "1100", "account_name": "Bank", "debit": 0, "credit": 800, "description": "Payment for rent"}
+  ]
+}
+
+Return ONLY the JSON object:`;
+
+    try {
+      const result = await this.model.generateContent(prompt);
+      const response = result.response.text();
+      
+      const jsonMatch = response.match(/\{[\s\S]*?\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        
+        // Validate journal entry
+        if (parsed.lines && parsed.lines.length >= 2) {
+          const totalDebits = parsed.lines.reduce((sum, line) => sum + (line.debit || 0), 0);
+          const totalCredits = parsed.lines.reduce((sum, line) => sum + (line.credit || 0), 0);
+          
+          if (Math.abs(totalDebits - totalCredits) < 0.01) {
+            return parsed;
+          }
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Journal entry parsing error:', error);
+      return null;
+    }
+  }
+
+  async generateAccountingInsights(userId) {
+    try {
+      const LedgerService = require('./ledger');
+      
+      // Get financial statements
+      const balanceSheet = await LedgerService.generateBalanceSheet(userId);
+      const currentDate = new Date();
+      const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+      const incomeStatement = await LedgerService.generateIncomeStatement(userId, startOfMonth, currentDate);
+      
+      const prompt = `Analyze this Malaysian business's financial statements and provide accounting insights:
+
+BALANCE SHEET:
+Total Assets: RM${balanceSheet.assets.total}
+Total Liabilities: RM${balanceSheet.liabilities.total}
+Total Equity: RM${balanceSheet.equity.total}
+Is Balanced: ${balanceSheet.is_balanced}
+
+INCOME STATEMENT (This Month):
+Revenue: RM${incomeStatement.revenue.total}
+Gross Profit: RM${incomeStatement.gross_profit}
+Operating Income: RM${incomeStatement.operating_income}
+Net Income: RM${incomeStatement.net_income}
+
+Provide 3 key accounting insights focusing on:
+1. Financial health and ratios
+2. Cash flow and liquidity concerns
+3. Profitability and efficiency
+
+Keep each insight under 100 words and include specific RM amounts where relevant.`;
+
+      const result = await this.model.generateContent(prompt);
+      return result.response.text();
+    } catch (error) {
+      console.error('Accounting insights error:', error);
+      return 'Unable to generate accounting insights at this time.';
+    }
+  }
 }
 
 module.exports = new AIService();
