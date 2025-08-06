@@ -90,16 +90,16 @@ What type of business do you run?`, {
 
 🚀 You're all set! Here's what you can do:
 
-💬 **Natural Language Bookkeeping:**
+💬 Natural Language Bookkeeping:
 Just type: "Beli inventory RM150" or "Sales RM500"
 
-📊 **Get Insights:**
+📊 Get Insights:
 /insights - AI-powered business analysis
 
-🔍 **Search Transactions:**
+🔍 Search Transactions:
 /search inventory - Find specific transactions
 
-🪙 **Bitcoin Treasury:**
+🧈 Bitcoin Treasury:
 Ask me: "Should I buy Bitcoin this month?"
 
 Ready to start? Try adding your first transaction! 💪`, {
@@ -120,7 +120,7 @@ Ready to start? Try adding your first transaction! 💪`, {
 
 Just tell me naturally:
 
-**Examples:**
+Examples:
 ${isIncome ? 
   '• "Sales RM500 today"\n• "Received payment RM1200"\n• "Cash sales RM350"' :
   '• "Beli inventory RM150"\n• "Bayar rent RM800"\n• "Petrol RM50"'
@@ -146,13 +146,13 @@ Type your transaction below: 👇`);
       
       bot.sendMessage(userId, `📊 **Business Dashboard**
 
-**This Month:**
+This Month:
 💰 Revenue: RM${revenue.toFixed(2)}
 💸 Expenses: RM${expenses.toFixed(2)}
 📈 Profit: RM${profit.toFixed(2)}
 📊 Margin: ${profitMargin}%
 
-**AI Insights:**
+AI Insights:
 ${insights}`);
       
     } catch (error) {
@@ -169,7 +169,7 @@ ${insights}`);
     if (!query) {
       bot.sendMessage(userId, `🔍 **Search Transactions**
 
-**Examples:**
+Examples:
 • /search inventory
 • /search rent
 • /search RM500
@@ -236,7 +236,7 @@ ${transaction.type === 'income' ? '💰' : '💸'} **${transaction.description}*
 📂 Category: ${transaction.category}
 📅 Date: ${new Date(transaction.date).toLocaleDateString()}
 
-📊 **Current Balance:** RM${balance.toFixed(2)}`);
+📊 Current Balance: RM${balance.toFixed(2)}`);
         
       } else {
         // Process as AI query
@@ -261,23 +261,23 @@ Or ask me anything about your business! 🤖`);
   bot.onText(/❓ Help|\/help/, (msg) => {
     const userId = msg.from.id;
     
-    bot.sendMessage(userId, `🤖 **kheAI Commands:**
+    bot.sendMessage(userId, `🤖 kheAI Commands:
 
-**💰 Financial Management:**
+💰 Financial Management:
 • Type naturally: "Beli stock RM200"
 • /insights - Business analysis
 • /search [term] - Find transactions
 
-**🪙 Bitcoin Treasury:**
+🧈 Bitcoin Treasury:
 • Ask: "Bitcoin price today?"
 • "Should I buy Bitcoin?"
 • "Show my BTC allocation"
 
-**⚙️ Settings:**
+⚙️ Settings:
 • /setup - Business profile
 • /start - Restart bot
 
-**📊 Quick Actions:**
+📊 Quick Actions:
 • 💰 Add Income
 • 💸 Add Expense  
 • 📊 Insights
