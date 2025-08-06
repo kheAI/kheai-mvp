@@ -144,7 +144,7 @@ Type your transaction below: 👇`);
       const profit = revenue - expenses;
       const profitMargin = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : 0;
       
-      bot.sendMessage(userId, `📊 **Business Dashboard**
+      bot.sendMessage(userId, `📊 Business Dashboard
 
 This Month:
 💰 Revenue: RM${revenue.toFixed(2)}
