@@ -1,12 +1,16 @@
 {
   "name": "kheai-mvp",
   "version": "1.0.0",
-  "description": "Liquidity AI with Bitcoin Treasury Management for Malaysian microbusinesses",
+  "description": "Chat-based AI Accounting for Smarter Liquidity & Bitcoin Treasury",
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test": "echo 'No tests yet'"
+    "test": "node test-bot.js",
+    "build": "npm install --production",
+    "verify": "node -c src/app.js && echo 'Syntax OK'",
+    "pretest": "npm run verify",
+    "predeploy": "npm run test"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
