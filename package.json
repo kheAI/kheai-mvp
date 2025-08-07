@@ -7,10 +7,11 @@
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
     "test": "node test-bot.js",
-    "build": "npm install --production",
+    "build": "npm install --omit=dev",
     "verify": "node -c src/app.js && echo 'Syntax OK'",
     "pretest": "npm run verify",
-    "predeploy": "npm run test"
+    "predeploy": "npm run test",
+    "postinstall": "echo 'Installation complete'"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
