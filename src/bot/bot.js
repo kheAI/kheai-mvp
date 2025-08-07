@@ -1,30 +1,24 @@
 // src/bot/bot.js
-
 const AIService = require('../services/ai');
 const { RedisService } = require('../services/redis');
+const redis = require('../../config/redis');
+
+// Safe require function to handle missing services
+const safeRequire = (modulePath, fallbackName) => {
+  try {
+    return require(modulePath);
+  } catch (e) {
+    console.log(`⚠️ ${fallbackName} not available: ${e.message}`);
+    return null;
+  }
+};
 
 // Try to import enhanced services, but don't fail if they're not available
-let RecurringService, CashflowService, AssetService, LedgerService;
-try {
-  RecurringService = require('../services/recurring');
-} catch (e) {
-  console.log('⚠️ RecurringService not available');
-}
-try {
-  CashflowService = require('../services/cashflow');
-} catch (e) {
-  console.log('⚠️ CashflowService not available');
-}
-try {
-  AssetService = require('../services/assets');
-} catch (e) {
-  console.log('⚠️ AssetService not available');
-}
-try {
-  LedgerService = require('../services/ledger');
-} catch (e) {
-  console.log('⚠️ LedgerService not available');
-}
+const RecurringService = safeRequire('../services/recurring', 'RecurringService');
+const CashflowService = safeRequire('../services/cashflow', 'CashflowService');
+const AssetService = safeRequire('../services/assets', 'AssetService');
+const LedgerService = safeRequire('../services/ledger', 'LedgerService');
+const LiabilityService = safeRequire('../services/liabilities', 'LiabilityService');
 
 // Enhanced response templates
 const responses = {
@@ -80,6 +74,48 @@ Or ask me anything about accounting! 🤖`,
 Try being more specific or use /help for available commands.`
 };
 
+// Helper function to reverse journal entry from ledger
+async function reverseJournalFromLedger(userId, journalEntry) {
+  try {
+    const month = new Date(journalEntry.date).getMonth() + 1;
+    const year = new Date(journalEntry.date).getFullYear();
+
+    for (const entry of journalEntry.entries) {
+      const ledgerKey = `ledger:${userId}:${entry.account_code}:${year}:${month}`;
+      
+      // REVERSE the totals
+      if (entry.debit_amount > 0) {
+        await redis.hIncrByFloat(ledgerKey, 'total_debits', -entry.debit_amount);
+      }
+      if (entry.credit_amount > 0) {
+        await redis.hIncrByFloat(ledgerKey, 'total_credits', -entry.credit_amount);
+      }
+
+      // REVERSE balance change
+      const balanceChange = -(entry.debit_amount - entry.credit_amount);
+      
+      // Get account type to determine how to reverse
+      const accountCode = entry.account_code;
+      const isAssetOrExpense = accountCode.startsWith('1') || accountCode.startsWith('5');
+      
+      if (isAssetOrExpense) {
+        // For assets/expenses: reverse the debit-credit difference
+        await redis.hIncrByFloat(ledgerKey, 'balance', balanceChange);
+      } else {
+        // For liabilities/equity/revenue: reverse the credit-debit difference  
+        await redis.hIncrByFloat(ledgerKey, 'balance', -balanceChange);
+      }
+      
+      await redis.hSet(ledgerKey, 'last_updated', new Date().toISOString());
+    }
+    
+    console.log(`✅ Reversed journal entry: ${journalEntry.id}`);
+  } catch (error) {
+    console.error('Reverse journal error:', error);
+    throw error;
+  }
+}
+
 function initializeBot(bot) {
   console.log('🚀 Initializing kheAI Accounting Bot...');
 
@@ -126,51 +162,59 @@ function initializeBot(bot) {
     
     bot.sendMessage(userId, `🤖 kheAI ACCOUNTING COMMANDS
 
-💰 BASIC TRANSACTIONS:
-• Just type: "Sales RM500" or "Paid rent RM800"
-• /insights - Business analysis (auto-fixes metrics)
-• /transactions - View ALL transactions
+💰 TRANSACTIONS:
+• "Sales RM500" or "Paid rent RM800" - Add transactions
+• /transactions - View all transactions
 • /search [term] - Find transactions
 • /delete - Remove transactions (choose by number)
 • /export - Download CSV
 
 📚 ACCOUNTING & BOOKKEEPING:
-• /journal - Create journal entries
 • /trial_balance - View trial balance
 • /balance_sheet - Generate balance sheet
 • /income_statement - Profit & loss statement
 • /cashflow_statement - Cash flow statement
 • /chart_of_accounts - View account codes
+• /journal - Create manual journal entries
+• /journal_list - View all journal entries (🤖 auto + ✏️ manual)
+• /journal_edit - Edit journal entries (fix AI mistakes)
+• /journal_delete - Delete journal entries (choose by number)
+
+💎 ASSETS & LIABILITIES:
+• /assets_list - View/manage assets
+• /assets_add - Add new asset (auto-creates journal entry)
+• /liabilities_list - View/manage liabilities
+• /liabilities_add - Add new liability (auto-creates journal entry)
 
 💫 RECURRING TRANSACTIONS:
-• /recurring_list - View & delete by number
+• /recurring_list - View recurring transactions
 • "Monthly rent RM800" - Create recurring
 
-📊 ADVANCED FEATURES:
-• /forecast - Cashflow projections
-• /assets_list - View assets & delete option
-• /assets_add - Add new asset
-• /assets_delete - Delete assets by number
+📊 ANALYSIS & FORECASTING:
+• /insights - Business analysis & AI recommendations
+• /forecast - Cashflow projections (if available)
 
 🪙 BITCOIN TREASURY:
-• "Bitcoin price now?" - Current BTC + advice
-• "Should I buy Bitcoin?" - Recommendations
+• "Bitcoin price now?" - Current BTC price + allocation advice
 • "How to buy Bitcoin safely?" - Security guide
+• "Should I buy Bitcoin?" - Investment recommendations
 
-🔧 MAINTENANCE:
-• /recover - Fix missing transactions & metrics
-• /debug - System status
+🔧 MAINTENANCE & RECOVERY:
+• /recover - Fix data issues & rebuild metrics
+• /fix_metrics - Repair calculations
+• /debug - System status & diagnostics
 • /status - Service availability
-• /fix_metrics - Manual metric correction
 
-ACCOUNTING EXAMPLES:
-• "Paid rent RM800" → Auto creates journal entry
-• "Dr 5100 RM800, Cr 1100 RM800" → Manual journal
-• "Received sales RM1500" → Revenue + journal entry
+✨ SMART FEATURES:
+• Every transaction auto-creates journal entries
+• Assets/liabilities auto-balance with equity/cash
+• Proper double-entry bookkeeping maintained
+• AI fixes accounting mistakes automatically
+• View auto-generated vs manual entries
+• Edit wrong AI-generated journal entries
 
-✨ NEW: Every transaction automatically creates proper double-entry journal entries!
-
-Type naturally - I understand English and Malay!`);
+Type naturally - I understand English and Malay!
+Examples: "Beli inventory RM150", "Rental income RM800"`);
   });
 
   // Enhanced Insights command with accounting ratios
@@ -266,6 +310,181 @@ What journal entry would you like to create?`);
     await RedisService.setUserState(userId, 'awaiting_journal_entry', 'general');
   });
 
+  // List all journal entries
+  bot.onText(/\/journal_list/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /journal_list command from user ${userId}`);
+    
+    if (!LedgerService) {
+      bot.sendMessage(userId, '📚 Accounting features are coming soon!');
+      return;
+    }
+    
+    try {
+      const journalIds = await redis.lRange(`user:${userId}:journals`, 0, -1);
+      
+      if (journalIds.length === 0) {
+        bot.sendMessage(userId, '📚 No journal entries found.');
+        return;
+      }
+      
+      let message = `📚 JOURNAL ENTRIES\n\nReply with number to view details:\n\n`;
+      
+      for (let i = 0; i < Math.min(10, journalIds.length); i++) {
+        try {
+          const journal = await redis.json.get(`journal:${journalIds[i]}`);
+          if (journal) {
+            const date = new Date(journal.date).toLocaleDateString();
+            const isAuto = journal.reference.includes('TXN-') || journal.reference.includes('ASSET-') || journal.reference.includes('LIAB-');
+            const autoFlag = isAuto ? '🤖' : '✏️';
+            
+            message += `${i + 1}. ${autoFlag} ${journal.description}\n`;
+            message += `   ${journal.reference} • RM${journal.total_debit.toFixed(2)} • ${date}\n\n`;
+          }
+        } catch (error) {
+          console.error(`Error getting journal ${journalIds[i]}:`, error);
+        }
+      }
+      
+      if (journalIds.length > 10) {
+        message += `... and ${journalIds.length - 10} more entries\n\n`;
+      }
+      
+      message += `🤖 = Auto-generated | ✏️ = Manual\nType number to view details`;
+      
+      bot.sendMessage(userId, message);
+      
+      await RedisService.setUserState(userId, 'awaiting_journal_view_number', journalIds.slice(0, 10));
+      
+    } catch (error) {
+      console.error('Journal list error:', error);
+      bot.sendMessage(userId, '❌ Unable to load journal entries.');
+    }
+  });
+
+  // Journal edit command
+  bot.onText(/\/journal_edit/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /journal_edit command from user ${userId}`);
+    
+    if (!LedgerService) {
+      bot.sendMessage(userId, '📚 Accounting features are coming soon!');
+      return;
+    }
+    
+    try {
+      const journalIds = await redis.lRange(`user:${userId}:journals`, 0, -1);
+      
+      if (journalIds.length === 0) {
+        bot.sendMessage(userId, '📝 No journal entries to edit.');
+        return;
+      }
+      
+      let message = `📝 EDIT JOURNAL ENTRIES\n\nReply with the number to edit:\n\n`;
+      
+      const validJournals = [];
+      let displayCount = 0;
+      
+      for (const journalId of journalIds) {
+        if (displayCount >= 10) break;
+        
+        try {
+          const journal = await redis.json.get(`journal:${journalId}`);
+          if (journal) {
+            const date = new Date(journal.date).toLocaleDateString();
+            const isAuto = journal.reference.includes('TXN-') || journal.reference.includes('ASSET-') || journal.reference.includes('LIAB-');
+            const autoFlag = isAuto ? '🤖' : '✏️';
+            displayCount++;
+            validJournals.push(journal);
+            
+            message += `${displayCount}. ${autoFlag} ${journal.description}\n`;
+            message += `   ${journal.reference} • RM${journal.total_debit.toFixed(2)} • ${date}\n\n`;
+          }
+        } catch (error) {
+          await redis.lRem(`user:${userId}:journals`, 1, journalId);
+        }
+      }
+      
+      if (validJournals.length === 0) {
+        bot.sendMessage(userId, '📝 No valid journal entries found.');
+        return;
+      }
+      
+      message += `🤖 = Auto-generated (AI) | ✏️ = Manual\n`;
+      message += `Type the number (1-${validJournals.length}) to edit:`;
+      
+      bot.sendMessage(userId, message);
+      
+      await RedisService.setUserState(userId, 'awaiting_journal_edit_number', validJournals);
+      
+    } catch (error) {
+      console.error('Journal edit command error:', error);
+      bot.sendMessage(userId, '❌ Unable to show journal entries.');
+    }
+  });
+
+  // Simple journal deletion command (like transactions)
+  bot.onText(/\/journal_delete/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /journal_delete command from user ${userId}`);
+    
+    if (!LedgerService) {
+      bot.sendMessage(userId, '📚 Accounting features are coming soon!');
+      return;
+    }
+    
+    try {
+      const journalIds = await redis.lRange(`user:${userId}:journals`, 0, -1);
+      
+      if (journalIds.length === 0) {
+        bot.sendMessage(userId, '🗑️ No journal entries to delete.');
+        return;
+      }
+      
+      let message = `🗑️ RECENT JOURNAL ENTRIES\n\nReply with the number to delete:\n\n`;
+      
+      const validJournals = [];
+      let displayCount = 0;
+      
+      for (const journalId of journalIds) {
+        if (displayCount >= 10) break; // Show max 10
+        
+        try {
+          const journal = await redis.json.get(`journal:${journalId}`);
+          if (journal) {
+            const date = new Date(journal.date).toLocaleDateString();
+            const isAuto = journal.reference.includes('TXN-') || journal.reference.includes('ASSET-') || journal.reference.includes('LIAB-');
+            const autoFlag = isAuto ? '🤖' : '✏️';
+            
+            displayCount++;
+            validJournals.push(journal);
+            
+            message += `${displayCount}. ${autoFlag} ${journal.description} - RM${journal.total_debit.toFixed(2)} (${date})\n`;
+          }
+        } catch (error) {
+          // Skip invalid journals
+          await redis.lRem(`user:${userId}:journals`, 1, journalId);
+        }
+      }
+      
+      if (validJournals.length === 0) {
+        bot.sendMessage(userId, '🗑️ No valid journal entries found.');
+        return;
+      }
+      
+      message += `\n🤖 = Auto-generated | ✏️ = Manual\n`;
+      message += `Type the number (1-${validJournals.length}) to delete:`;
+      
+      bot.sendMessage(userId, message);
+      
+      await RedisService.setUserState(userId, 'awaiting_journal_delete_number', validJournals);
+      
+    } catch (error) {
+      console.error('Journal delete command error:', error);
+      bot.sendMessage(userId, '❌ Unable to show journal entries.');
+    }
+  });
+
   // Balance Sheet command
   bot.onText(/\/balance_sheet/, async (msg) => {
     const userId = msg.from.id;
@@ -294,6 +513,13 @@ What journal entry would you like to create?`);
       if (balanceSheet.assets.fixed.length > 0) {
         message += `Fixed Assets:\n`;
         balanceSheet.assets.fixed.forEach(asset => {
+          message += `  ${asset.account_name}: RM${asset.balance.toFixed(2)}\n`;
+        });
+      }
+
+      if (balanceSheet.assets.investment.length > 0) {
+        message += `Investment Assets:\n`;
+        balanceSheet.assets.investment.forEach(asset => {
           message += `  ${asset.account_name}: RM${asset.balance.toFixed(2)}\n`;
         });
       }
@@ -748,6 +974,195 @@ What would you like to search for?`);
       bot.sendMessage(userId, '❌ Export failed. Please try again.');
     }
   });
+
+  // Assets commands
+  bot.onText(/\/assets_list/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /assets_list command from user ${userId}`);
+    
+    if (!AssetService) {
+      bot.sendMessage(userId, '💎 Asset management feature is coming soon!');
+      return;
+    }
+    
+    try {
+      const assets = await AssetService.getUserAssets(userId);
+      
+      if (assets.length === 0) {
+        bot.sendMessage(userId, '💎 No assets found.\n\nAdd one by typing: "Add Bitcoin RM2000"');
+        return;
+      }
+      
+      let message = `💎 YOUR ASSETS\n\nReply with number to delete:\n\n`;
+      
+      assets.forEach((asset, index) => {
+        const categoryEmoji = asset.category === 'current' ? '💧' : 
+                             asset.category === 'fixed' ? '🏔️' : '📈';
+        message += `${index + 1}. ${categoryEmoji} ${asset.name}\n`;
+        message += `   RM${asset.current_value_myr.toFixed(2)} • ${asset.type}\n\n`;
+      });
+      
+      const totalValue = assets.reduce((sum, asset) => sum + asset.current_value_myr, 0);
+      message += `💰 Total Value: RM${totalValue.toFixed(2)}\n\n`;
+      message += `Commands: /assets_add | /assets_delete`;
+      
+      bot.sendMessage(userId, message);
+      
+    } catch (error) {
+      console.error('Assets list error:', error);
+      bot.sendMessage(userId, '❌ Unable to load assets.');
+    }
+  });
+
+  bot.onText(/\/assets_add/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /assets_add command from user ${userId}`);
+    
+    bot.sendMessage(userId, `💎 ADD ASSET
+
+Type naturally:
+
+EXAMPLES:
+• "Add cash RM5000"
+• "Add Bitcoin RM2000"
+• "Add property RM500000"
+• "Add stocks RM15000"
+
+What asset would you like to add?`);
+    
+    await RedisService.setUserState(userId, 'awaiting_asset_input', 'general');
+  });
+
+  bot.onText(/\/assets_delete/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /assets_delete command from user ${userId}`);
+    
+    if (!AssetService) {
+      bot.sendMessage(userId, '💎 Asset management feature is coming soon!');
+      return;
+    }
+    
+    try {
+      const assets = await AssetService.getUserAssets(userId);
+      
+      if (assets.length === 0) {
+        bot.sendMessage(userId, '💎 No assets to delete.\n\nAdd one first: "Add Bitcoin RM2000"');
+        return;
+      }
+      
+      let message = `💎 ALL ASSETS\n\nReply with the number to delete:\n\n`;
+      
+      assets.forEach((asset, index) => {
+        const categoryEmoji = asset.category === 'current' ? '💧' : 
+                             asset.category === 'fixed' ? '🏔️' : '📈';
+        message += `${index + 1}. ${categoryEmoji} ${asset.name}\n`;
+        message += `   RM${asset.current_value_myr} • ${asset.type}\n\n`;
+      });
+      
+      message += `Type the number (1-${assets.length}) to delete:`;
+      
+      bot.sendMessage(userId, message);
+      await RedisService.setUserState(userId, 'awaiting_asset_delete_number', assets);
+      
+    } catch (error) {
+      console.error('Assets delete list error:', error);
+      bot.sendMessage(userId, '❌ Unable to list assets for deletion.');
+    }
+  });
+
+  // Liabilities commands
+  bot.onText(/\/liabilities_list/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /liabilities_list command from user ${userId}`);
+    
+    if (!LiabilityService) {
+      bot.sendMessage(userId, '📋 Liability management feature is coming soon!');
+      return;
+    }
+    
+    try {
+      const liabilities = await LiabilityService.getUserLiabilities(userId);
+      
+      if (liabilities.length === 0) {
+        bot.sendMessage(userId, '📋 No liabilities found.\n\nAdd one by typing: "Add loan RM5000"');
+        return;
+      }
+      
+      let message = `📋 YOUR LIABILITIES\n\nReply with number to delete:\n\n`;
+      
+      liabilities.forEach((liability, index) => {
+        const categoryEmoji = liability.category === 'current' ? '⚡' : '🏛️';
+        message += `${index + 1}. ${categoryEmoji} ${liability.name}\n`;
+        message += `   RM${liability.current_balance_myr.toFixed(2)} • ${liability.type}\n\n`;
+      });
+      
+      const totalLiabilities = liabilities.reduce((sum, liability) => sum + liability.current_balance_myr, 0);
+      message += `💸 Total Liabilities: RM${totalLiabilities.toFixed(2)}\n\n`;
+      message += `Commands: /liabilities_add | /liabilities_delete`;
+      
+      bot.sendMessage(userId, message);
+      
+    } catch (error) {
+      console.error('Liabilities list error:', error);
+      bot.sendMessage(userId, '❌ Unable to load liabilities.');
+    }
+  });
+
+  bot.onText(/\/liabilities_add/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /liabilities_add command from user ${userId}`);
+    
+    bot.sendMessage(userId, `📋 ADD LIABILITY
+
+Type naturally:
+
+EXAMPLES:
+• "Add loan RM10000"
+• "Add credit card RM2000"
+• "Add mortgage RM300000"
+
+What liability would you like to add?`);
+    
+    await RedisService.setUserState(userId, 'awaiting_liability_input', 'general');
+  });
+
+  bot.onText(/\/liabilities_delete/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /liabilities_delete command from user ${userId}`);
+    
+    if (!LiabilityService) {
+      bot.sendMessage(userId, '📋 Liability management feature is coming soon!');
+      return;
+    }
+    
+    try {
+      const liabilities = await LiabilityService.getUserLiabilities(userId);
+      
+      if (liabilities.length === 0) {
+        bot.sendMessage(userId, '📋 No liabilities to delete.\n\nAdd one first: "Add loan RM10000"');
+        return;
+      }
+      
+      let message = `📋 ALL LIABILITIES\n\nReply with the number to delete:\n\n`;
+      
+      liabilities.forEach((liability, index) => {
+        const categoryEmoji = liability.category === 'current' ? '⚡' : '🏛️';
+        message += `${index + 1}. ${categoryEmoji} ${liability.name}\n`;
+        message += `   RM${liability.current_balance_myr.toFixed(2)} • ${liability.type}\n\n`;
+      });
+      
+      message += `Type the number (1-${liabilities.length}) to delete:`;
+      
+      bot.sendMessage(userId, message);
+      
+      await RedisService.setUserState(userId, 'awaiting_liability_delete_number', liabilities);
+      
+    } catch (error) {
+      console.error('Liabilities delete list error:', error);
+      bot.sendMessage(userId, '❌ Unable to list liabilities for deletion.');
+    }
+  });
+
   // Recurring commands
   bot.onText(/\/recurring_list/, async (msg) => {
     const userId = msg.from.id;
@@ -829,108 +1244,6 @@ What would you like to search for?`);
     }
   });
 
-  // Asset commands
-  bot.onText(/\/assets_list/, async (msg) => {
-    const userId = msg.from.id;
-    console.log(`📱 /assets_list command from user ${userId}`);
-    
-    if (!AssetService) {
-      bot.sendMessage(userId, '💎 Asset management feature is coming soon!');
-      return;
-    }
-    
-    try {
-      const breakdown = await AssetService.getLiquidityBreakdown(userId);
-      const assets = await AssetService.getUserAssets(userId);
-      
-      if (breakdown.total_net_worth === 0) {
-        bot.sendMessage(userId, '💎 No assets found.\n\nAdd one by typing: "Add Bitcoin RM2000"');
-        return;
-      }
-      
-      let message = `💎 ASSET BREAKDOWN\n\n` +
-        `💧 Liquid: RM${breakdown.liquid.total.toFixed(2)} (${breakdown.liquid.assets.length} assets)\n` +
-        `🌊 Semi-Liquid: RM${breakdown.semi_liquid.total.toFixed(2)} (${breakdown.semi_liquid.assets.length} assets)\n` +
-        `🏔️ Illiquid: RM${breakdown.illiquid.total.toFixed(2)} (${breakdown.illiquid.assets.length} assets)\n\n` +
-        `📊 Total: RM${breakdown.total_net_worth.toFixed(2)}\n` +
-        `🌊 Liquidity Ratio: ${(breakdown.liquidity_ratio * 100).toFixed(1)}%\n\n`;
-      
-      if (assets.length > 0) {
-        message += `DETAILED ASSETS:\n`;
-        assets.forEach((asset, index) => {
-          const liquidityEmoji = asset.category === 'liquid' ? '💧' : 
-                               asset.category === 'semi_liquid' ? '🌊' : '🏔️';
-          message += `${index + 1}. ${liquidityEmoji} ${asset.name} - RM${asset.current_value_myr}\n`;
-        });
-        
-        message += `\nCommands: /assets_add | /assets_delete`;
-      }
-      
-      bot.sendMessage(userId, message);
-      
-    } catch (error) {
-      console.error('Assets list error:', error);
-      bot.sendMessage(userId, '❌ Unable to load assets.');
-    }
-  });
-
-  bot.onText(/\/assets_add/, async (msg) => {
-    const userId = msg.from.id;
-    console.log(`📱 /assets_add command from user ${userId}`);
-    
-    bot.sendMessage(userId, `💎 ADD ASSET
-
-Type naturally:
-
-EXAMPLES:
-• "Add cash RM5000"
-• "Add Bitcoin RM2000"
-• "Add property RM500000"
-• "Add stocks RM15000"
-
-What asset would you like to add?`);
-    
-    await RedisService.setUserState(userId, 'awaiting_asset_input', 'general');
-  });
-
-  bot.onText(/\/assets_delete/, async (msg) => {
-    const userId = msg.from.id;
-    console.log(`📱 /assets_delete command from user ${userId}`);
-    
-    if (!AssetService) {
-      bot.sendMessage(userId, '💎 Asset management feature is coming soon!');
-      return;
-    }
-    
-    try {
-      const assets = await AssetService.getUserAssets(userId);
-      
-      if (assets.length === 0) {
-        bot.sendMessage(userId, '💎 No assets to delete.\n\nAdd one first: "Add Bitcoin RM2000"');
-        return;
-      }
-      
-      let message = `💎 ALL ASSETS\n\nReply with the number to delete:\n\n`;
-      
-      assets.forEach((asset, index) => {
-        const liquidityEmoji = asset.category === 'liquid' ? '💧' : 
-                             asset.category === 'semi_liquid' ? '🌊' : '🏔️';
-        message += `${index + 1}. ${liquidityEmoji} ${asset.name}\n`;
-        message += `   RM${asset.current_value_myr} • ${asset.type}\n\n`;
-      });
-      
-      message += `Type the number (1-${assets.length}) to delete:`;
-      
-      bot.sendMessage(userId, message);
-      
-      await RedisService.setUserState(userId, 'awaiting_asset_delete_number', assets);
-      
-    } catch (error) {
-      console.error('Assets delete list error:', error);
-      bot.sendMessage(userId, '❌ Unable to list assets for deletion.');
-    }
-  });
-
   // Recovery command
   bot.onText(/\/recover/, async (msg) => {
     const userId = msg.from.id;
@@ -1002,7 +1315,8 @@ Try /insights now!`);
       message += `• LedgerService: ${LedgerService ? '✅' : '❌'}\n`;
       message += `• RecurringService: ${RecurringService ? '✅' : '❌'}\n`;
       message += `• CashflowService: ${CashflowService ? '✅' : '❌'}\n`;
-      message += `• AssetService: ${AssetService ? '✅' : '❌'}\n\n`;
+      message += `• AssetService: ${AssetService ? '✅' : '❌'}\n`;
+      message += `• LiabilityService: ${LiabilityService ? '✅' : '❌'}\n\n`;
       
       const transactions = await RedisService.findAllUserTransactions(userId);
       const metrics = await RedisService.getBusinessMetrics(userId);
@@ -1034,6 +1348,7 @@ ${LedgerService ? '✅' : '❌'} Accounting: ${LedgerService ? 'Available' : 'No
 ${RecurringService ? '✅' : '❌'} Recurring: ${RecurringService ? 'Available' : 'Not Available'}
 ${CashflowService ? '✅' : '❌'} Cashflow: ${CashflowService ? 'Available' : 'Not Available'}
 ${AssetService ? '✅' : '❌'} Assets: ${AssetService ? 'Available' : 'Not Available'}
+${LiabilityService ? '✅' : '❌'} Liabilities: ${LiabilityService ? 'Available' : 'Not Available'}
 
 Try /help for available commands.`);
   });
@@ -1048,6 +1363,55 @@ Try /help for available commands.`);
         remove_keyboard: true
       }
     });
+  });
+
+  // Debug balance sheet
+  bot.onText(/\/debug_balance/, async (msg) => {
+    const userId = msg.from.id;
+    console.log(`📱 /debug_balance command from user ${userId}`);
+    
+    if (!LedgerService) {
+      bot.sendMessage(userId, '📚 Accounting features not available');
+      return;
+    }
+    
+    bot.sendChatAction(userId, 'typing');
+    
+    try {
+      const trialBalance = await LedgerService.getTrialBalance(userId);
+      const balanceSheet = await LedgerService.generateBalanceSheet(userId);
+      
+      let message = `🔍 BALANCE SHEET DEBUG\n\n`;
+      
+      message += `TRIAL BALANCE:\n`;
+      message += `Total Debits: RM${trialBalance.total_debits.toFixed(2)}\n`;
+      message += `Total Credits: RM${trialBalance.total_credits.toFixed(2)}\n`;
+      message += `TB Balanced: ${trialBalance.is_balanced ? '✅' : '❌'}\n\n`;
+      
+      message += `BALANCE SHEET:\n`;
+      message += `Total Assets: RM${balanceSheet.assets.total.toFixed(2)}\n`;
+      message += `Total Liabilities: RM${balanceSheet.liabilities.total.toFixed(2)}\n`;
+      message += `Total Equity: RM${balanceSheet.equity.total.toFixed(2)}\n`;
+      message += `L + E Total: RM${balanceSheet.total_liabilities_equity.toFixed(2)}\n`;
+      message += `BS Balanced: ${balanceSheet.is_balanced ? '✅' : '❌'}\n\n`;
+      
+      if (!balanceSheet.is_balanced) {
+        const difference = balanceSheet.assets.total - balanceSheet.total_liabilities_equity;
+        message += `DIFFERENCE: RM${difference.toFixed(2)}\n`;
+        message += `This difference should be added to equity as current earnings.\n\n`;
+      }
+      
+      message += `EQUITY BREAKDOWN:\n`;
+      balanceSheet.equity.items.forEach(item => {
+        message += `• ${item.account_name}: RM${item.balance.toFixed(2)}\n`;
+      });
+      
+      bot.sendMessage(userId, message);
+      
+    } catch (error) {
+      console.error('Debug balance error:', error);
+      bot.sendMessage(userId, `❌ Debug failed: ${error.message}`);
+    }
   });
 
   // Natural language processing with enhanced accounting features
@@ -1114,13 +1478,45 @@ Use /recurring_list to manage recurring transactions.`);
 
 💎 ${asset.name}
 💵 RM${asset.current_value_myr}
-📂 ${asset.type} • ${asset.liquidity_days} days
+📂 ${asset.type} • ${asset.category}
 
 Use /assets_list to view all assets.`);
             return;
           }
         } catch (error) {
           console.error('Asset creation error:', error);
+        }
+      }
+      
+      // Check for liability patterns
+      const liabilityKeywords = ['add loan', 'add debt', 'add credit card', 'add mortgage'];
+      const isLiabilityPattern = liabilityKeywords.some(keyword => 
+        message.toLowerCase().includes(keyword)
+      );
+      
+      if (isLiabilityPattern && LiabilityService) {
+        try {
+          const parsedLiability = await AIService.parseAssetOrLiability(message, userId, true);
+          
+          if (parsedLiability && parsedLiability.value) {
+            const liability = await LiabilityService.createLiability(userId, {
+              name: parsedLiability.name,
+              type: parsedLiability.type,
+              balance: parsedLiability.value,
+              original_amount: parsedLiability.value
+            });
+            
+            bot.sendMessage(userId, `✅ LIABILITY ADDED
+
+📋 ${liability.name}
+💵 RM${liability.current_balance_myr}
+📂 ${liability.type} • ${liability.category}
+
+Use /liabilities_list to view all liabilities.`);
+            return;
+          }
+        } catch (error) {
+          console.error('Liability creation error:', error);
         }
       }
       
@@ -1139,6 +1535,7 @@ Use /assets_list to view all assets.`);
           }
         } catch (error) {
           console.error('Auto journal entry error:', error);
+          journalRef = 'Manual entry needed';
         }
         
         const metrics = await RedisService.getBusinessMetrics(userId);
@@ -1248,6 +1645,31 @@ Use /assets_list to view all assets.`);
         await RedisService.clearUserState(userId);
       }
       
+      else if (userState.state === 'awaiting_liability_delete_number') {
+        const number = parseInt(msg.text);
+        const liabilityList = userState.data;
+        
+        if (number >= 1 && number <= liabilityList.length) {
+          const liabilityToDelete = liabilityList[number - 1];
+          
+          if (LiabilityService) {
+            const result = await LiabilityService.deleteLiability(userId, liabilityToDelete.id);
+            
+            if (result.success) {
+              bot.sendMessage(userId, `✅ Deleted liability: ${liabilityToDelete.name} (RM${liabilityToDelete.current_balance_myr})`);
+            } else {
+              bot.sendMessage(userId, `❌ Failed to delete liability.`);
+            }
+          } else {
+            bot.sendMessage(userId, '📋 Liability service not available.');
+          }
+        } else {
+          bot.sendMessage(userId, `❌ Invalid number. Please choose 1-${liabilityList.length}`);
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
       else if (userState.state === 'awaiting_asset_input') {
         if (AssetService) {
           try {
@@ -1277,6 +1699,40 @@ Use /assets_list to view all assets.`);
         await RedisService.clearUserState(userId);
       }
       
+      else if (userState.state === 'awaiting_liability_input') {
+        if (LiabilityService) {
+          try {
+            const parsedLiability = await AIService.parseAssetOrLiability(msg.text, userId, true);
+            
+            if (parsedLiability && parsedLiability.value) {
+              const liability = await LiabilityService.createLiability(userId, {
+                name: parsedLiability.name,
+                type: parsedLiability.type,
+                balance: parsedLiability.value,
+                original_amount: parsedLiability.value
+              });
+              
+              bot.sendMessage(userId, `✅ LIABILITY ADDED
+
+📋 ${liability.name}
+💵 RM${liability.current_balance_myr}
+📂 ${liability.type}
+
+Use /liabilities_list to view all liabilities.`);
+            } else {
+              bot.sendMessage(userId, `❌ Could not parse liability. Try: "Add loan RM10000"`);
+            }
+          } catch (error) {
+            console.error('Liability parsing error:', error);
+            bot.sendMessage(userId, `❌ Failed to add liability. Try: "Add credit card RM2000"`);
+          }
+        } else {
+          bot.sendMessage(userId, '📋 Liability management feature is coming soon!');
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
       else if (userState.state === 'awaiting_journal_entry') {
         if (!LedgerService) {
           bot.sendMessage(userId, '📚 Accounting features are coming soon!');
@@ -1285,7 +1741,6 @@ Use /assets_list to view all assets.`);
         }
         
         try {
-          // Try AI parsing first
           const parsedJournal = await AIService.parseJournalEntry(msg.text, userId);
           
           if (parsedJournal && parsedJournal.lines) {
@@ -1319,61 +1774,259 @@ Try these formats:
         await RedisService.clearUserState(userId);
       }
       
+      else if (userState.state === 'awaiting_journal_view_number') {
+        const number = parseInt(msg.text);
+        const journalIds = userState.data;
+        
+        if (number >= 1 && number <= journalIds.length) {
+          try {
+            const journal = await redis.json.get(`journal:${journalIds[number - 1]}`);
+            if (journal) {
+              let message = `📚 JOURNAL ENTRY DETAILS\n\n`;
+              message += `Reference: ${journal.reference}\n`;
+              message += `Date: ${new Date(journal.date).toLocaleDateString()}\n`;
+              message += `Description: ${journal.description}\n`;
+              message += `Total: RM${journal.total_debit.toFixed(2)}\n\n`;
+              
+              message += `ENTRIES:\n`;
+              journal.entries.forEach(entry => {
+                message += `${entry.account_code} - ${entry.account_name}\n`;
+                if (entry.debit_amount > 0) {
+                  message += `  Debit: RM${entry.debit_amount.toFixed(2)}\n`;
+                }
+                if (entry.credit_amount > 0) {
+                  message += `  Credit: RM${entry.credit_amount.toFixed(2)}\n`;
+                }
+                message += `\n`;
+              });
+              
+              const isAuto = journal.reference.includes('TXN-') || journal.reference.includes('ASSET-') || journal.reference.includes('LIAB-');
+              if (isAuto) {
+                message += `🤖 This entry was auto-generated and cannot be edited.`;
+              }
+              
+              bot.sendMessage(userId, message);
+            }
+          } catch (error) {
+            console.error('Journal view error:', error);
+            bot.sendMessage(userId, '❌ Unable to load journal entry.');
+          }
+        } else {
+          bot.sendMessage(userId, `❌ Invalid number. Please choose 1-${journalIds.length}`);
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
+      else if (userState.state === 'awaiting_journal_delete_number') {
+        const number = parseInt(msg.text);
+        const journals = userState.data;
+        
+        if (number >= 1 && number <= journals.length) {
+          const journalToDelete = journals[number - 1];
+          
+          try {
+            // REVERSE THE JOURNAL ENTRY FROM LEDGER
+            await reverseJournalFromLedger(userId, journalToDelete);
+            
+            // DELETE THE JOURNAL ENTRY
+            await redis.del(`journal:${journalToDelete.id}`);
+            await redis.lRem(`user:${userId}:journals`, 1, journalToDelete.id);
+            
+            bot.sendMessage(userId, `✅ Deleted journal entry: ${journalToDelete.description} (${journalToDelete.reference})`);
+            
+          } catch (error) {
+            console.error('Journal deletion error:', error);
+            bot.sendMessage(userId, `❌ Failed to delete journal entry.`);
+          }
+        } else {
+          bot.sendMessage(userId, `❌ Invalid number. Please choose 1-${journals.length}`);
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
+      else if (userState.state === 'awaiting_journal_edit_number') {
+        const number = parseInt(msg.text);
+        const journals = userState.data;
+        
+        if (number >= 1 && number <= journals.length) {
+          const journalToEdit = journals[number - 1];
+          
+          // Show current journal entry details
+          let message = `📝 EDITING JOURNAL ENTRY\n\n`;
+          message += `Reference: ${journalToEdit.reference}\n`;
+          message += `Description: ${journalToEdit.description}\n`;
+          message += `Date: ${new Date(journalToEdit.date).toLocaleDateString()}\n`;
+          message += `Total: RM${journalToEdit.total_debit.toFixed(2)}\n\n`;
+          
+          message += `CURRENT ENTRIES:\n`;
+          journalToEdit.entries.forEach((entry, index) => {
+            message += `${index + 1}. ${entry.account_code} - ${entry.account_name}\n`;
+            if (entry.debit_amount > 0) {
+              message += `   Debit: RM${entry.debit_amount.toFixed(2)}\n`;
+            }
+            if (entry.credit_amount > 0) {
+              message += `   Credit: RM${entry.credit_amount.toFixed(2)}\n`;
+            }
+          });
+          
+          message += `\n📝 EDIT OPTIONS:\n`;
+          message += `1. Edit description\n`;
+          message += `2. Edit account codes\n`;
+          message += `3. Edit amounts\n`;
+          message += `4. Replace entire entry\n`;
+          message += `5. Cancel\n\n`;
+          message += `What would you like to edit? (1-5):`;
+          
+          bot.sendMessage(userId, message);
+          
+          await RedisService.setUserState(userId, 'awaiting_journal_edit_option', journalToEdit);
+          
+        } else {
+          bot.sendMessage(userId, `❌ Invalid number. Please choose 1-${journals.length}`);
+          await RedisService.clearUserState(userId);
+        }
+      }
+      
+      else if (userState.state === 'awaiting_journal_edit_option') {
+        const option = parseInt(msg.text);
+        const journalToEdit = userState.data;
+        
+        switch (option) {
+          case 1:
+            bot.sendMessage(userId, `📝 EDIT DESCRIPTION\n\nCurrent: ${journalToEdit.description}\n\nEnter new description:`);
+            await RedisService.setUserState(userId, 'awaiting_journal_edit_description', journalToEdit);
+            break;
+            
+          case 2:
+            bot.sendMessage(userId, `📝 EDIT ACCOUNT CODES\n\nCurrent entries:\n${journalToEdit.entries.map((e, i) => `${i+1}. ${e.account_code} - ${e.account_name}`).join('\n')}\n\nEnter new journal entry in format:\n"Dr 5100 RM800, Cr 1100 RM800 - description"`);
+            await RedisService.setUserState(userId, 'awaiting_journal_edit_accounts', journalToEdit);
+            break;
+            
+          case 3:
+            bot.sendMessage(userId, `📝 EDIT AMOUNTS\n\nEnter new journal entry with updated amounts:\n"Dr 5100 RM[NEW_AMOUNT], Cr 1100 RM[NEW_AMOUNT] - ${journalToEdit.description}"`);
+            await RedisService.setUserState(userId, 'awaiting_journal_edit_amounts', journalToEdit);
+            break;
+            
+          case 4:
+            bot.sendMessage(userId, `📝 REPLACE ENTIRE ENTRY\n\nEnter completely new journal entry:\n\nExamples:\n• "Paid rent RM800"\n• "Dr 5100 RM800, Cr 1100 RM800 - Monthly rent"\n\nWhat's the new entry?`);
+            await RedisService.setUserState(userId, 'awaiting_journal_edit_replace', journalToEdit);
+            break;
+            
+          case 5:
+            bot.sendMessage(userId, '❌ Edit cancelled.');
+            await RedisService.clearUserState(userId);
+            break;
+            
+          default:
+            bot.sendMessage(userId, '❌ Invalid option. Please choose 1-5.');
+            break;
+        }
+      }
+      
+      else if (userState.state === 'awaiting_journal_edit_description') {
+        const journalToEdit = userState.data;
+        const newDescription = msg.text.trim();
+        
+        if (newDescription.length < 2) {
+          bot.sendMessage(userId, '❌ Description too short. Please try again.');
+          return;
+        }
+        
+        try {
+          // Update description only
+          await redis.json.set(`journal:${journalToEdit.id}`, '$.description', newDescription);
+          await redis.json.set(`journal:${journalToEdit.id}`, '$.updated_at', new Date().toISOString());
+          
+          bot.sendMessage(userId, `✅ DESCRIPTION UPDATED\n\nOld: ${journalToEdit.description}\nNew: ${newDescription}\n\nJournal entry ${journalToEdit.reference} has been updated.`);
+          
+        } catch (error) {
+          console.error('Journal description edit error:', error);
+          bot.sendMessage(userId, '❌ Failed to update description.');
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
+      else if (userState.state === 'awaiting_journal_edit_accounts' || 
+               userState.state === 'awaiting_journal_edit_amounts' || 
+               userState.state === 'awaiting_journal_edit_replace') {
+        
+        const journalToEdit = userState.data;
+        
+        try {
+          // Parse the new journal entry
+          const parsedJournal = await AIService.parseJournalEntry(msg.text, userId);
+          
+          if (parsedJournal && parsedJournal.lines) {
+            // REVERSE the old journal entry from ledger
+            await reverseJournalFromLedger(userId, journalToEdit);
+            
+            // Calculate new totals
+            let totalDebit = 0;
+            let totalCredit = 0;
+            const newEntries = [];
+            
+            for (const line of parsedJournal.lines) {
+              const lineEntry = {
+                account_code: line.account_code,
+                account_name: LedgerService.chartOfAccounts[line.account_code]?.name || 'Unknown Account',
+                debit_amount: parseFloat(line.debit || 0),
+                credit_amount: parseFloat(line.credit || 0),
+                description: line.description || parsedJournal.description
+              };
+              
+              newEntries.push(lineEntry);
+              totalDebit += lineEntry.debit_amount;
+              totalCredit += lineEntry.credit_amount;
+            }
+            
+            // Validate double-entry
+            if (Math.abs(totalDebit - totalCredit) > 0.01) {
+              bot.sendMessage(userId, `❌ Journal entry not balanced!\nDebits: RM${totalDebit.toFixed(2)}\nCredits: RM${totalCredit.toFixed(2)}\n\nPlease try again.`);
+              return;
+            }
+            
+            // Update the journal entry
+            const updatedJournal = {
+              ...journalToEdit,
+              description: parsedJournal.description || journalToEdit.description,
+              total_debit: totalDebit,
+              total_credit: totalCredit,
+              entries: newEntries,
+              updated_at: new Date().toISOString(),
+              edited_by: 'user'
+            };
+            
+            // Save updated journal
+            await redis.json.set(`journal:${journalToEdit.id}`, '$', updatedJournal);
+            
+            // Apply new journal entry to ledger
+            await LedgerService.updateGeneralLedger(userId, updatedJournal);
+            
+            bot.sendMessage(userId, `✅ JOURNAL ENTRY UPDATED\n\n📚 Reference: ${updatedJournal.reference}\n📝 Description: ${updatedJournal.description}\n💰 Amount: RM${updatedJournal.total_debit.toFixed(2)}\n\nNEW ENTRIES:\n${updatedJournal.entries.map(entry => 
+              `${entry.account_name}: Dr RM${entry.debit_amount.toFixed(2)} Cr RM${entry.credit_amount.toFixed(2)}`
+            ).join('\n')}\n\n✅ Ledger balances have been updated.\nUse /trial_balance to verify.`);
+            
+          } else {
+            bot.sendMessage(userId, `❌ Could not parse journal entry.\n\nTry these formats:\n• "Paid rent RM800"\n• "Dr 5100 RM800, Cr 1100 RM800"`);
+          }
+          
+        } catch (error) {
+          console.error('Journal edit error:', error);
+          bot.sendMessage(userId, `❌ Failed to update journal entry: ${error.message}`);
+        }
+        
+        await RedisService.clearUserState(userId);
+      }
+      
     } catch (error) {
       console.error('User state handling error:', error);
       bot.sendMessage(userId, '❌ Something went wrong. Please try again.');
       await RedisService.clearUserState(userId);
     }
   }
-
-  //Debug balance sheet
-  bot.onText(/\/debug_balance/, async (msg) => {
-    const userId = msg.from.id;
-    console.log(`📱 /debug_balance command from user ${userId}`);
-    
-    if (!LedgerService) {
-      bot.sendMessage(userId, '📚 Accounting features not available');
-      return;
-    }
-    
-    bot.sendChatAction(userId, 'typing');
-    
-    try {
-      const trialBalance = await LedgerService.getTrialBalance(userId);
-      const balanceSheet = await LedgerService.generateBalanceSheet(userId);
-      
-      let message = `🔍 BALANCE SHEET DEBUG\n\n`;
-      
-      message += `TRIAL BALANCE:\n`;
-      message += `Total Debits: RM${trialBalance.total_debits.toFixed(2)}\n`;
-      message += `Total Credits: RM${trialBalance.total_credits.toFixed(2)}\n`;
-      message += `TB Balanced: ${trialBalance.is_balanced ? '✅' : '❌'}\n\n`;
-      
-      message += `BALANCE SHEET:\n`;
-      message += `Total Assets: RM${balanceSheet.assets.total.toFixed(2)}\n`;
-      message += `Total Liabilities: RM${balanceSheet.liabilities.total.toFixed(2)}\n`;
-      message += `Total Equity: RM${balanceSheet.equity.total.toFixed(2)}\n`;
-      message += `L + E Total: RM${balanceSheet.total_liabilities_equity.toFixed(2)}\n`;
-      message += `BS Balanced: ${balanceSheet.is_balanced ? '✅' : '❌'}\n\n`;
-      
-      if (!balanceSheet.is_balanced) {
-        const difference = balanceSheet.assets.total - balanceSheet.total_liabilities_equity;
-        message += `DIFFERENCE: RM${difference.toFixed(2)}\n`;
-        message += `This difference should be added to equity as current earnings.\n\n`;
-      }
-      
-      message += `EQUITY BREAKDOWN:\n`;
-      balanceSheet.equity.items.forEach(item => {
-        message += `• ${item.account_name}: RM${item.balance.toFixed(2)}\n`;
-      });
-      
-      bot.sendMessage(userId, message);
-      
-    } catch (error) {
-      console.error('Debug balance error:', error);
-      bot.sendMessage(userId, `❌ Debug failed: ${error.message}`);
-    }
-  });
 
   // Error handling
   bot.on('polling_error', (error) => {
@@ -1403,6 +2056,7 @@ Try these formats:
   if (RecurringService) console.log('💫 Recurring: /recurring_list');
   if (CashflowService) console.log('📊 Cashflow: /forecast');
   if (AssetService) console.log('💎 Assets: /assets_list, /assets_add, /assets_delete');
+  if (LiabilityService) console.log('📋 Liabilities: /liabilities_list, /liabilities_add, /liabilities_delete');
   console.log('🪙 Bitcoin Treasury: Natural language queries');
   console.log('🔧 Maintenance: /recover, /fix_metrics, /debug, /status');
 }

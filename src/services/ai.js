@@ -1,3 +1,5 @@
+// src/services/ai.js
+
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { RedisService } = require('./redis');
 
@@ -577,31 +579,45 @@ Examples:
     return null;
   }
 
-  async parseAsset(message, userId, assetCategory = null) {
-    const prompt = `Parse this asset addition message into structured data:
-Message: "${message}"
+  async parseAssetOrLiability(message, userId, isLiability = false) {
+    const entityType = isLiability ? 'liability' : 'asset';
+    const typeOptions = isLiability ? 
+      'loan|credit_card|mortgage|accounts_payable|short_term_loan|business_loan|other' : 
+      'cash|bank_savings|crypto|stocks|property|equipment|other';
+      
+    const prompt = `Parse this ${entityType} addition message into structured data:
+  Message: "${message}"
 
-Extract and return ONLY valid JSON:
-{
-  "name": "asset name",
-  "type": "cash|bank_savings|crypto|stocks|property|business_equity|other",
-  "value": number,
-  "purchase_price": number (same as value if not specified)
-}
+  Extract and return ONLY valid JSON:
+  {
+    "name": "${entityType} name",
+    "type": "${typeOptions}",
+    "value": number
+  }
 
-ASSET TYPE DETECTION:
-- cash: cash, money, tunai
-- bank_savings: bank, savings, simpanan
-- crypto: bitcoin, btc, crypto, cryptocurrency
-- stocks: stocks, shares, saham
-- property: property, house, rumah, tanah
-- business_equity: business, equity, perniagaan
+  ${isLiability ? 'LIABILITY' : 'ASSET'} TYPE DETECTION:
+  ${isLiability ? 
+    `- loan: loan, pinjaman, debt
+  - credit_card: credit card, kad kredit
+  - mortgage: mortgage, housing loan
+  - accounts_payable: payable, hutang
+  - business_loan: business loan, loan perniagaan` :
+    `- cash: cash, money, tunai
+  - bank_savings: bank, savings, simpanan
+  - crypto: bitcoin, btc, crypto, cryptocurrency
+  - stocks: stocks, shares, saham
+  - property: property, house, rumah, tanah`
+  }
 
-EXAMPLES:
-"Add cash RM5000" → {"name": "Cash", "type": "cash", "value": 5000, "purchase_price": 5000}
-"Add Bitcoin RM2000" → {"name": "Bitcoin", "type": "crypto", "value": 2000, "purchase_price": 2000}
+  EXAMPLES:
+  ${isLiability ? 
+    `"Add loan RM10000" → {"name": "Business Loan", "type": "loan", "value": 10000}
+  "Add credit card RM2000" → {"name": "Credit Card", "type": "credit_card", "value": 2000}` :
+    `"Add cash RM5000" → {"name": "Cash", "type": "cash", "value": 5000}
+  "Add Bitcoin RM2000" → {"name": "Bitcoin", "type": "crypto", "value": 2000}`
+  }
 
-Return ONLY the JSON object:`;
+  Return ONLY the JSON object:`;
 
     try {
       const result = await this.model.generateContent(prompt);
@@ -615,14 +631,14 @@ Return ONLY the JSON object:`;
         }
       }
       
-      return this.fallbackAssetParsing(message);
+      return this.fallbackAssetOrLiabilityParsing(message, isLiability);
     } catch (error) {
-      console.error('Asset parsing error:', error);
-      return this.fallbackAssetParsing(message);
+      console.error(`${entityType} parsing error:`, error);
+      return this.fallbackAssetOrLiabilityParsing(message, isLiability);
     }
   }
 
-  fallbackAssetParsing(message) {
+  fallbackAssetOrLiabilityParsing(message, isLiability = false) {
     try {
       const lowerMessage = message.toLowerCase();
       
@@ -636,35 +652,48 @@ Return ONLY the JSON object:`;
       const value = parseFloat(amountMatch[1]);
       if (value <= 0) return null;
       
-      // Detect asset type
       let type = 'other';
-      let name = 'Asset';
+      let name = isLiability ? 'Liability' : 'Asset';
       
-      if (lowerMessage.includes('cash') || lowerMessage.includes('tunai')) {
-        type = 'cash';
-        name = 'Cash';
-      } else if (lowerMessage.includes('bitcoin') || lowerMessage.includes('btc')) {
-        type = 'crypto';
-        name = 'Bitcoin';
-      } else if (lowerMessage.includes('bank') || lowerMessage.includes('savings')) {
-        type = 'bank_savings';
-        name = 'Bank Savings';
-      } else if (lowerMessage.includes('stock') || lowerMessage.includes('shares')) {
-        type = 'stocks';
-        name = 'Stocks';
-      } else if (lowerMessage.includes('property') || lowerMessage.includes('house')) {
-        type = 'property';
-        name = 'Property';
+      if (isLiability) {
+        // Liability type detection
+        if (lowerMessage.includes('loan') || lowerMessage.includes('pinjaman')) {
+          type = 'loan';
+          name = 'Business Loan';
+        } else if (lowerMessage.includes('credit card') || lowerMessage.includes('kad kredit')) {
+          type = 'credit_card';
+          name = 'Credit Card';
+        } else if (lowerMessage.includes('mortgage') || lowerMessage.includes('housing loan')) {
+          type = 'mortgage';
+          name = 'Mortgage';
+        }
+      } else {
+        // Asset type detection (existing logic)
+        if (lowerMessage.includes('cash') || lowerMessage.includes('tunai')) {
+          type = 'cash';
+          name = 'Cash';
+        } else if (lowerMessage.includes('bitcoin') || lowerMessage.includes('btc')) {
+          type = 'crypto';
+          name = 'Bitcoin';
+        } else if (lowerMessage.includes('bank') || lowerMessage.includes('savings')) {
+          type = 'bank_savings';
+          name = 'Bank Savings';
+        } else if (lowerMessage.includes('stock') || lowerMessage.includes('shares')) {
+          type = 'stocks';
+          name = 'Stocks';
+        } else if (lowerMessage.includes('property') || lowerMessage.includes('house')) {
+          type = 'property';
+          name = 'Property';
+        }
       }
       
       return {
         name: name,
         type: type,
-        value: value,
-        purchase_price: value
+        value: value
       };
     } catch (error) {
-      console.error('Fallback asset parsing error:', error);
+      console.error('Fallback parsing error:', error);
       return null;
     }
   }

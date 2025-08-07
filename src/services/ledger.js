@@ -15,7 +15,7 @@ class LedgerService {
       1500: { name: 'Equipment', type: 'asset', category: 'fixed' },
       1600: { name: 'Accumulated Depreciation - Equipment', type: 'asset', category: 'fixed', isContra: true },
       1700: { name: 'Property', type: 'asset', category: 'fixed' },
-      1800: { name: 'Bitcoin Treasury', type: 'asset', category: 'investment' },
+      1800: { name: 'Investments', type: 'asset', category: 'investment' },
       
       // Liabilities (2000-2999)
       2000: { name: 'Accounts Payable', type: 'liability', category: 'current' },
@@ -30,14 +30,14 @@ class LedgerService {
       3100: { name: 'Retained Earnings', type: 'equity', category: 'retained' },
       3200: { name: 'Current Year Earnings', type: 'equity', category: 'current' },
       
-      // Revenue (4000-4999) - These should NOT appear on balance sheet
+      // Revenue (4000-4999)
       4000: { name: 'Sales Revenue', type: 'revenue', category: 'operating' },
       4100: { name: 'Service Revenue', type: 'revenue', category: 'operating' },
       4200: { name: 'Rental Income', type: 'revenue', category: 'operating' },
       4300: { name: 'Interest Income', type: 'revenue', category: 'non_operating' },
-      4400: { name: 'Bitcoin Gains', type: 'revenue', category: 'investment' },
+      4400: { name: 'Investment Gains', type: 'revenue', category: 'investment' },
       
-      // Expenses (5000-5999) - These should NOT appear on balance sheet
+      // Expenses (5000-5999)
       5000: { name: 'Cost of Goods Sold', type: 'expense', category: 'cogs' },
       5100: { name: 'Rent Expense', type: 'expense', category: 'operating' },
       5200: { name: 'Utilities Expense', type: 'expense', category: 'operating' },
@@ -46,7 +46,7 @@ class LedgerService {
       5500: { name: 'Professional Fees', type: 'expense', category: 'operating' },
       5600: { name: 'Depreciation Expense', type: 'expense', category: 'operating' },
       5700: { name: 'Interest Expense', type: 'expense', category: 'non_operating' },
-      5800: { name: 'Bitcoin Losses', type: 'expense', category: 'investment' }
+      5800: { name: 'Investment Losses', type: 'expense', category: 'investment' }
     };
   }
 
@@ -224,11 +224,11 @@ class LedgerService {
           cumulativeBalance += monthBalance;
         }
 
-        if (Math.abs(cumulativeBalance) > 0.01) { // Only include accounts with significant balances
+        if (Math.abs(cumulativeBalance) > 0.01) {
           const item = {
             account_code: accountCode,
             account_name: accountInfo.name,
-            balance: Math.abs(cumulativeBalance)
+            balance: accountInfo.isContra ? -Math.abs(cumulativeBalance) : Math.abs(cumulativeBalance)
           };
 
           if (accountInfo.type === 'asset') {
@@ -237,7 +237,12 @@ class LedgerService {
               balanceSheet.assets[category] = [];
             }
             balanceSheet.assets[category].push(item);
-            balanceSheet.assets.total += item.balance;
+            
+            if (accountInfo.isContra) {
+              balanceSheet.assets.total -= item.balance;
+            } else {
+              balanceSheet.assets.total += item.balance;
+            }
           } else if (accountInfo.type === 'liability') {
             const category = accountInfo.category || 'current';
             if (!balanceSheet.liabilities[category]) {
@@ -252,18 +257,72 @@ class LedgerService {
         }
       }
 
-      // CRITICAL FIX: Add current period earnings to equity
+      // ADD ASSETS FROM ASSET SERVICE
+      try {
+        const AssetService = require('./assets');
+        const userAssets = await AssetService.getUserAssets(userId);
+        
+        userAssets.forEach(asset => {
+          let category = 'current';
+          if (asset.type === 'property' || asset.type === 'equipment') {
+            category = 'fixed';
+          } else if (asset.type === 'crypto' || asset.type === 'stocks') {
+            category = 'investment';
+          }
+
+          if (!balanceSheet.assets[category]) {
+            balanceSheet.assets[category] = [];
+          }
+
+          balanceSheet.assets[category].push({
+            account_code: 'ASSET',
+            account_name: asset.name,
+            balance: asset.current_value_myr
+          });
+          
+          balanceSheet.assets.total += asset.current_value_myr;
+        });
+      } catch (error) {
+        console.error('Error adding assets to balance sheet:', error);
+      }
+
+      // ADD LIABILITIES FROM LIABILITY SERVICE
+      // commented out to prevent double-counting
+      /*try {
+        const LiabilityService = require('./liabilities');
+        const userLiabilities = await LiabilityService.getUserLiabilities(userId);
+        
+        userLiabilities.forEach(liability => {
+          const category = liability.category === 'current' ? 'current' : 'long_term';
+          
+          if (!balanceSheet.liabilities[category]) {
+            balanceSheet.liabilities[category] = [];
+          }
+
+          balanceSheet.liabilities[category].push({
+            account_code: 'LIABILITY',
+            account_name: liability.name,
+            balance: liability.current_balance_myr
+          });
+          
+          balanceSheet.liabilities.total += liability.current_balance_myr;
+        });
+      } catch (error) {
+        console.error('Error adding liabilities to balance sheet:', error);
+      }*/
+
+      // Add current period earnings to equity
       const currentDate = new Date();
       const startOfYear = new Date(currentDate.getFullYear(), 0, 1);
       const incomeStatement = await this.generateIncomeStatement(userId, startOfYear, date);
-      
+
       if (Math.abs(incomeStatement.net_income) > 0.01) {
         balanceSheet.equity.items.push({
           account_code: '3200',
           account_name: 'Current Year Earnings',
-          balance: Math.abs(incomeStatement.net_income)
+          balance: incomeStatement.net_income  // ✅ FIXED: Remove Math.abs() - can be negative
         });
-        balanceSheet.equity.total += Math.abs(incomeStatement.net_income);
+        balanceSheet.equity.total += incomeStatement.net_income;  // ✅ FIXED: Remove Math.abs()
       }
 
       balanceSheet.total_liabilities_equity = balanceSheet.liabilities.total + balanceSheet.equity.total;
@@ -385,7 +444,6 @@ class LedgerService {
       cashflowStatement.operating_activities.total += incomeStatement.net_income;
 
       // Add back non-cash expenses (depreciation)
-      // Get depreciation expense
       let currentDate = new Date(start);
       while (currentDate <= end) {
         const year = currentDate.getFullYear();
@@ -407,12 +465,11 @@ class LedgerService {
       }
 
       // Calculate changes in working capital
-      const workingCapitalAccounts = [1200, 1300, 1400, 2000, 2100]; // AR, Inventory, Prepaid, AP, Accrued
+      const workingCapitalAccounts = [1200, 1300, 1400, 2000, 2100];
       for (const accountCode of workingCapitalAccounts) {
         const accountInfo = this.chartOfAccounts[accountCode];
         if (!accountInfo) continue;
 
-        // Get beginning and ending balances
         const beginningBalance = await this.getAccountBalance(userId, accountCode, start);
         const endingBalance = await this.getAccountBalance(userId, accountCode, end);
         const change = endingBalance - beginningBalance;
@@ -420,9 +477,9 @@ class LedgerService {
         if (Math.abs(change) > 0.01) {
           let cashEffect = 0;
           if (accountInfo.type === 'asset') {
-            cashEffect = -change; // Increase in assets uses cash
+            cashEffect = -change;
           } else {
-            cashEffect = change; // Increase in liabilities provides cash
+            cashEffect = change;
           }
 
           cashflowStatement.operating_activities.items.push({
@@ -433,8 +490,8 @@ class LedgerService {
         }
       }
 
-      // Investing activities (equipment, property, bitcoin purchases)
-      const investingAccounts = [1500, 1700, 1800]; // Equipment, Property, Bitcoin
+      // Investing activities
+      const investingAccounts = [1500, 1700, 1800];
       for (const accountCode of investingAccounts) {
         const accountInfo = this.chartOfAccounts[accountCode];
         if (!accountInfo) continue;
@@ -446,14 +503,14 @@ class LedgerService {
         if (Math.abs(change) > 0.01) {
           cashflowStatement.investing_activities.items.push({
             description: `Purchase of ${accountInfo.name}`,
-            amount: -change // Purchases are negative cash flow
+            amount: -change
           });
           cashflowStatement.investing_activities.total -= change;
         }
       }
 
-      // Financing activities (loans, owner equity)
-      const financingAccounts = [2500, 3000]; // Long-term debt, Owner's equity
+      // Financing activities
+      const financingAccounts = [2500, 3000];
       for (const accountCode of financingAccounts) {
         const accountInfo = this.chartOfAccounts[accountCode];
         if (!accountInfo) continue;
@@ -505,7 +562,6 @@ class LedgerService {
     }
   }
 
-  // AI-powered transaction to journal entry conversion
   async convertTransactionToJournalEntry(userId, transaction) {
     try {
       const lines = [];
@@ -513,14 +569,14 @@ class LedgerService {
       if (transaction.type === 'income') {
         // Debit: Cash/Bank
         lines.push({
-          account_code: '1100', // Bank - Current Account
+          account_code: '1100',
           debit: transaction.amount_myr,
           credit: 0,
           description: transaction.description
         });
         
         // Credit: Revenue account based on category
-        let revenueAccount = '4000'; // Default: Sales Revenue
+        let revenueAccount = '4000';
         if (transaction.category === 'rental') revenueAccount = '4200';
         else if (transaction.category === 'commission') revenueAccount = '4100';
         
@@ -532,7 +588,7 @@ class LedgerService {
         });
       } else {
         // Expense transaction
-        let expenseAccount = '5400'; // Default: Office Supplies
+        let expenseAccount = '5400';
         if (transaction.category === 'rent') expenseAccount = '5100';
         else if (transaction.category === 'utilities') expenseAccount = '5200';
         else if (transaction.category === 'marketing') expenseAccount = '5300';
@@ -548,7 +604,7 @@ class LedgerService {
         
         // Credit: Cash/Bank
         lines.push({
-          account_code: '1100', // Bank - Current Account
+          account_code: '1100',
           debit: 0,
           credit: transaction.amount_myr,
           description: transaction.description
