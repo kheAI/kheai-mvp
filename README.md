@@ -1,4 +1,4 @@
-# kheAI: AI Accounting for Smarter Liquidity & Bitcoin Treasury
+# kheAI: Chat-based AI Accounting for Smarter Liquidity & Bitcoin Treasury
 
 > Track income, control expenses, manage cashflow — effortlessly in Telegram.
 
